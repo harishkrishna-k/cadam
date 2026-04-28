@@ -17,8 +17,6 @@ import './index.css';
 import React from 'react';
 import { ErrorView } from './views/ErrorView.tsx';
 import { SignInView } from './views/SignInView.tsx';
-import { SignUpView } from './views/SignUpView.tsx';
-import { SignUpEmailView } from './views/SignUpEmailView.tsx';
 import { ResetPasswordView } from './views/ResetPasswordView.tsx';
 import { PrivacyPolicyView } from './views/PrivacyPolicyView.tsx';
 import { UpdatePasswordView } from './views/UpdatePasswordView.tsx';
