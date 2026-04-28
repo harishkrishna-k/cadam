@@ -190,13 +190,6 @@ export function PromptView() {
       >
         {!user && (
           <div className="fixed right-4 top-4 z-10 flex flex-row gap-2">
-            <Button
-              variant="light"
-              onClick={() => navigate('/signup')}
-              className="w-auto"
-            >
-              Sign Up
-            </Button>
             <Button onClick={() => navigate('/signin')} className="w-auto">
               <LogIn className="mr-2 h-4 w-4" />
               Sign In
@@ -267,13 +260,6 @@ export function PromptView() {
                     className="!text-adam-blue hover:!text-adam-blue/80"
                   >
                     Sign in
-                  </Link>{' '}
-                  or{' '}
-                  <Link
-                    to="/signup"
-                    className="!text-adam-blue hover:!text-adam-blue/80"
-                  >
-                    create an account
                   </Link>{' '}
                   to start generating
                 </p>
