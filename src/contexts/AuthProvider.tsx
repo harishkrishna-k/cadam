@@ -256,9 +256,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         totalTokens: userExtraData?.totalTokens ?? 0,
         subscriptionTokenLimit: userExtraData?.subscriptionTokenLimit ?? 50,
         subscriptionExpiresAt: userExtraData?.subscriptionExpiresAt ?? null,
-        // Consider auth loading, user data loading, and profile loading states
-        isLoading:
-          isLoading || (!!user && (isUserExtraDataLoading || isProfileLoading)),
+        // Only consider the initial auth session loading state
+        isLoading: isLoading,
         signIn,
         signUp,
         signInWithMagicLink,
