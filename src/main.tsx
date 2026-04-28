@@ -69,8 +69,8 @@ const router = sentryCreateBrowserRouter(
       errorElement: <ErrorView />,
       children: [
         { path: '/signin', element: <SignInView /> },
-        { path: '/signup', element: <SignUpView /> },
-        { path: '/signup-email', element: <SignUpEmailView /> },
+        { path: '/signup', element: <Navigate to="/signin" replace /> },
+        { path: '/signup-email', element: <Navigate to="/signin" replace /> },
         { path: '/reset-password', element: <ResetPasswordView /> },
         { path: '/confirm-email', element: <EmailConfirmation /> },
         { path: '/privacy-policy', element: <PrivacyPolicyView /> },

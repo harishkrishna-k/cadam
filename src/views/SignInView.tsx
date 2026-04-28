@@ -360,16 +360,6 @@ export function SignInView() {
                 'Send Magic Link'
               )}
             </Button>
-
-            <div className="text-center text-sm text-white">
-              Don't have an account?{' '}
-              <Link
-                to="/signup"
-                className="text-adam-blue hover:text-adam-blue/80"
-              >
-                Sign up
-              </Link>
-            </div>
           </form>
         </div>
       </div>

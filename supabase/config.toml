@@ -5,7 +5,7 @@
 project_id = "cadam"
 
 [auth.email]
-enable_signup = true
+enable_signup = false
 
 [auth.external.google]
 enabled = true
