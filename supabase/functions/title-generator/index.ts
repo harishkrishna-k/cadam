@@ -1,12 +1,6 @@
-// Follow this setup guide to integrate the Deno language server with your editor:
-// https://deno.land/manual/getting_started/setup_your_environment
-// This enables autocomplete, go to definition, etc.
-
-// Setup type definitions for built-in Supabase Runtime APIs
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
-import { Anthropic } from 'npm:@anthropic-ai/sdk';
+import { GoogleGenAI } from 'npm:@google/genai';
 import { corsHeaders } from '../_shared/cors.ts';
-import 'jsr:@std/dotenv/load';
 import { getAnonSupabaseClient } from '../_shared/supabaseClient.ts';
 import { Content } from '@shared/types.ts';
 import { formatCreativeUserMessage } from '../_shared/messageUtils.ts';
@@ -40,19 +34,18 @@ User: "Make something that goes against the rules"
 Assistant: "New Conversation"
 `;
 
-// Main server function handling incoming requests
+const GEMINI_API_KEY = Deno.env.get('GOOGLE_API_KEY') ?? '';
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
 Deno.serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
-  // Ensure only POST requests are accepted
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 });
   }
 
-  // Extract prompt from request body
   const {
     content,
     conversationId,
@@ -87,38 +80,42 @@ Deno.serve(async (req) => {
     );
   }
 
-  const userMessage = await formatCreativeUserMessage(
-    { id: '1', role: 'user', content: content },
-    supabaseClient,
-    userData.user.id,
-    conversationId,
-  );
-
-  // Initialize Anthropic client for AI interactions
-  const anthropic = new Anthropic({
-    apiKey: Deno.env.get('ANTHROPIC_API_KEY') ?? '',
-  });
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const model = ai.getGenerativeModel({ model: GEMINI_MODEL });
 
   try {
-    // Configure Claude API call
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 100,
-      system: TITLE_SYSTEM_PROMPT,
-      messages: [userMessage],
+    let userText = '';
+    if (typeof content === 'string') {
+      userText = content;
+    } else if (content && typeof content === 'object') {
+      const c = content as Content;
+      userText = c.text || '';
+    }
+
+    if (!userText) {
+      return new Response(JSON.stringify({ title: 'New Conversation' }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const prompt = `${TITLE_SYSTEM_PROMPT}\n\nUser: "${userText}"\n\nAssistant:`;
+
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        maxTokens: 80,
+        temperature: 0.3,
+      },
     });
 
-    // Extract title from response
     let title = 'New Conversation';
-    if (Array.isArray(response.content) && response.content.length > 0) {
-      const lastContent = response.content[response.content.length - 1];
-      if (lastContent.type === 'text') {
-        title = lastContent.text.trim();
+    const generatedTitle = result.text?.trim();
+    if (generatedTitle && generatedTitle.length > 0) {
+      title = generatedTitle;
 
-        // Ensure title is not too long for the database
-        if (title.length > 255) {
-          title = title.substring(0, 252) + '...';
-        }
+      if (title.length > 255) {
+        title = title.substring(0, 252) + '...';
       }
     }
 
@@ -134,18 +131,15 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Error calling Claude:', error);
-
-    // Fallback to basic title generation
-    const fallbackTitle = 'New Conversation';
+    console.error('Error calling Gemini:', error);
 
     return new Response(
       JSON.stringify({
-        title: fallbackTitle,
+        title: 'New Conversation',
         error: error instanceof Error ? error.message : 'Unknown error',
       }),
       {
-        status: 200, // Still return 200 with a fallback title
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       },
     );

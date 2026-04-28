@@ -21,9 +21,7 @@ import { ResetPasswordView } from './views/ResetPasswordView.tsx';
 import { PrivacyPolicyView } from './views/PrivacyPolicyView.tsx';
 import { UpdatePasswordView } from './views/UpdatePasswordView.tsx';
 import { TermsOfServiceView } from './views/TermsOfServiceView.tsx';
-import EmailConfirmation from './views/EmailConfirmation.tsx';
 import { PromptView } from './views/PromptView.tsx';
-import { SubscriptionView } from './views/SubscriptionView.tsx';
 import { HistoryView } from './views/HistoryView.tsx';
 import { AuthGuard } from './components/auth/AuthGuard.tsx';
 import { Layout } from './components/Layout.tsx';
@@ -70,7 +68,6 @@ const router = sentryCreateBrowserRouter(
         { path: '/signup', element: <Navigate to="/signin" replace /> },
         { path: '/signup-email', element: <Navigate to="/signin" replace /> },
         { path: '/reset-password', element: <ResetPasswordView /> },
-        { path: '/confirm-email', element: <EmailConfirmation /> },
         { path: '/privacy-policy', element: <PrivacyPolicyView /> },
         { path: '/terms-of-service', element: <TermsOfServiceView /> },
         { path: '/update-password', element: <UpdatePasswordView /> },
@@ -103,11 +100,6 @@ const router = sentryCreateBrowserRouter(
                   path: '/history',
                   errorElement: <ErrorView />,
                   element: <HistoryView />,
-                },
-                {
-                  path: '/subscription',
-                  errorElement: <ErrorView />,
-                  element: <SubscriptionView />,
                 },
                 {
                   path: '/settings',
