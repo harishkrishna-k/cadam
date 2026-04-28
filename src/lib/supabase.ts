@@ -4,6 +4,8 @@ import { Database } from '@shared/database';
 const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const rawSupabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+console.log('CADAM: Supabase env check', { url: rawSupabaseUrl ? 'SET' : 'NOT SET', key: rawSupabaseKey ? 'SET' : 'NOT SET' });
+
 // Check if real Supabase config is missing
 export const isSupabaseConfigMissing = !rawSupabaseUrl || !rawSupabaseKey;
 

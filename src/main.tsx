@@ -114,7 +114,7 @@ const router = sentryCreateBrowserRouter(
       ],
     },
   ],
-  { future: { v7_relativeSplatPath: true } },
+  { future: { v7_relativeSplatPath: true }, basename: '/cadam' },
 );
 
 createRoot(document.getElementById('root')!).render(
