@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/cadam',
+  base: '/',
   plugins: [
     react(),
     sentryVitePlugin({
@@ -21,7 +21,7 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 1000,
 
-    outDir: 'dist/cadam',
+    outDir: 'dist',
     emptyOutDir: true,
 
     rollupOptions: {
