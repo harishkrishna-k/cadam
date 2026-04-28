@@ -1501,7 +1501,7 @@ function TextAreaChat({
           <Avatar className="h-8 w-8">
             <div className="h-full w-full p-1.5">
               <img
-                src={`${import.meta.env.BASE_URL}/Adam-Logo.png`}
+                src={`${import.meta.env.BASE_URL}Adam-Logo.png`}
                 alt="Adam Logo"
                 className="h-full w-full object-contain"
               />
