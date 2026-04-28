@@ -1,15 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
-import { ArrowLeft, Loader2, Mail } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-  InputOTPSeparator,
-} from '@/components/ui/input-otp';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { AuthError } from '@supabase/supabase-js';
@@ -21,16 +15,12 @@ import { validateRedirectUrl } from '@/lib/utils';
 export function SignInView() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [mode, setMode] = useState<'password' | 'magiclink'>('password');
-  const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const {
     signIn,
-    signInWithMagicLink,
-    verifyOtp,
     session,
     user,
     isLoading: authLoading,
@@ -101,164 +91,6 @@ export function SignInView() {
     }
   };
 
-  const handleMagicLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      await signInWithMagicLink(email);
-      setMagicLinkSent(true);
-    } catch (err) {
-      const error = err as AuthError;
-      setError(error.message);
-      toast({
-        title: 'Whoopsies',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const [otp, setOtp] = useState('');
-  const [isVerifying, setIsVerifying] = useState(false);
-
-  const handleVerifyOtp = async () => {
-    if (otp.length !== 6) return;
-    setIsVerifying(true);
-    setError(null);
-    try {
-      await verifyOtp(email, otp);
-      navigate(redirectPath);
-    } catch (err) {
-      const error = err as AuthError;
-      setError(error.message);
-      toast({
-        title: 'Whoopsies',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsVerifying(false);
-    }
-  };
-
-  if (magicLinkSent) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-adam-bg-dark p-4">
-        <div className="w-full max-w-md">
-          <div className="flex flex-col gap-4 rounded-lg bg-adam-bg-secondary-dark p-8 shadow-md">
-            <button
-              onClick={() => {
-                setMagicLinkSent(false);
-                setOtp('');
-                setError(null);
-                setMode('password');
-              }}
-              className="flex items-center gap-1 text-sm text-gray-400 transition-colors hover:text-white"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </button>
-
-            <div className="flex flex-col items-center gap-2 py-2">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-adam-blue/20">
-                <Mail className="h-6 w-6 text-adam-blue" />
-              </div>
-              <h3 className="text-lg font-semibold text-white">
-                Check your email
-              </h3>
-              <p className="text-center text-sm text-gray-400">
-                We sent a magic link to{' '}
-                <span className="font-medium text-white">{email}</span>
-              </p>
-            </div>
-
-            {error && (
-              <div className="rounded-md bg-red-900/50 p-3 text-sm text-red-200">
-                {error}
-              </div>
-            )}
-
-            <div className="relative flex items-center gap-3 py-2">
-              <div className="h-px flex-1 bg-gray-700" />
-              <span className="text-xs text-gray-500">
-                or enter code manually
-              </span>
-              <div className="h-px flex-1 bg-gray-700" />
-            </div>
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleVerifyOtp();
-              }}
-              className="flex flex-col gap-4"
-            >
-              <div className="flex justify-center">
-                <InputOTP
-                  maxLength={6}
-                  value={otp}
-                  onChange={setOtp}
-                  onComplete={handleVerifyOtp}
-                  className="gap-2"
-                >
-                  <InputOTPGroup className="text-white">
-                    <InputOTPSlot
-                      index={0}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                    <InputOTPSlot
-                      index={1}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                    <InputOTPSlot
-                      index={2}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                  </InputOTPGroup>
-                  <InputOTPSeparator className="text-gray-500" />
-                  <InputOTPGroup className="text-white">
-                    <InputOTPSlot
-                      index={3}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                    <InputOTPSlot
-                      index={4}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                    <InputOTPSlot
-                      index={5}
-                      className="h-11 w-11 border-gray-700 bg-adam-bg-dark"
-                    />
-                  </InputOTPGroup>
-                </InputOTP>
-              </div>
-
-              <Button
-                type="submit"
-                variant="outline"
-                className="w-full"
-                disabled={otp.length !== 6 || isVerifying}
-              >
-                {isVerifying ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Verifying...
-                  </>
-                ) : (
-                  'Verify Code'
-                )}
-              </Button>
-            </form>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-adam-bg-dark p-4">
       <div className="w-full max-w-md">
@@ -284,7 +116,7 @@ export function SignInView() {
           </div>
 
           <form
-            onSubmit={mode === 'password' ? handleSignIn : handleMagicLink}
+            onSubmit={handleSignIn}
             className="space-y-6"
           >
             {error && (
@@ -308,56 +140,37 @@ export function SignInView() {
               />
             </div>
 
-            {mode === 'password' && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="password" className="text-white">
-                    Password
-                  </Label>
-                  <Link
-                    to="/reset-password"
-                    className="text-sm text-adam-blue hover:text-adam-blue/80"
-                  >
-                    Forgot password?
-                  </Link>
-                </div>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  className="border-gray-700 bg-adam-bg-dark px-4 text-white placeholder:text-gray-400 max-[430px]:text-base"
-                />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password" className="text-white">
+                  Password
+                </Label>
+                <Link
+                  to="/reset-password"
+                  className="text-sm text-adam-blue hover:text-adam-blue/80"
+                >
+                  Forgot password?
+                </Link>
               </div>
-            )}
-
-            <div className="text-center">
-              <button
-                type="button"
-                className="text-sm text-adam-blue hover:text-adam-blue/80"
-                onClick={() => {
-                  setMode(mode === 'password' ? 'magiclink' : 'password');
-                  setError(null);
-                }}
-              >
-                {mode === 'password'
-                  ? 'Sign in with magic link instead'
-                  : 'Sign in with password instead'}
-              </button>
+              <Input
+                id="password"
+                type="password"
+                placeholder="Enter your password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="border-gray-700 bg-adam-bg-dark px-4 text-white placeholder:text-gray-400 max-[430px]:text-base"
+              />
             </div>
 
             <Button type="submit" className="w-full p-6" disabled={isLoading}>
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {mode === 'password' ? 'Signing in...' : 'Sending...'}
+                  Signing in...
                 </>
-              ) : mode === 'password' ? (
-                'Sign In'
               ) : (
-                'Send Magic Link'
+                'Sign In'
               )}
             </Button>
           </form>
