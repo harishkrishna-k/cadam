@@ -7,9 +7,6 @@ import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { AuthError } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
-import { useMutation } from '@tanstack/react-query';
-import { GoogleIcon } from '@/components/icons/CompanyIcons';
 import { validateRedirectUrl } from '@/lib/utils';
 
 export function SignInView() {
@@ -38,32 +35,6 @@ export function SignInView() {
       navigate('/', { replace: true });
     }
   }, [session, user, authLoading, navigate]);
-
-  const { mutate: signInWithGoogle, isPending: isSigningInWithGoogle } =
-    useMutation({
-      mutationFn: async () => {
-        // Use Supabase's built-in redirectTo parameter with validated URL
-        const redirectTo =
-          redirectPath !== '/'
-            ? `${window.location.origin}${redirectPath}`
-            : `${window.location.origin}/`;
-
-        await supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: {
-            redirectTo,
-          },
-        });
-      },
-      onError: (error) => {
-        toast({
-          title: 'Whoopsies',
-          description:
-            error instanceof Error ? error.message : 'Something went wrong',
-          variant: 'destructive',
-        });
-      },
-    });
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,16 +74,6 @@ export function SignInView() {
                 className="w-32"
               />
             </div>
-          </div>
-          <div className="w-full">
-            <Button
-              onClick={() => signInWithGoogle()}
-              className="flex w-full items-center gap-2 hover:bg-adam-blue/10"
-              disabled={isSigningInWithGoogle}
-            >
-              <GoogleIcon className="w-4" />
-              <span>Continue with Google</span>
-            </Button>
           </div>
 
           <form
