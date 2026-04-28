@@ -298,15 +298,21 @@ export function HistoryView() {
             </h1>
 
             {/* View Toggle */}
-            <div className="flex items-center gap-2 rounded-lg border border-adam-neutral-700 bg-adam-background-2 p-1">
+            <div
+              role="group"
+              aria-label="View mode"
+              className="flex items-center gap-1 rounded-lg border border-adam-neutral-700 bg-adam-background-2 p-1"
+            >
               <Button
                 variant="ghost"
                 size="sm"
+                aria-pressed={viewMode === 'list'}
+                aria-label="List view"
                 onClick={() => setViewMode('list')}
-                className={`h-8 px-3 ${
+                className={`h-8 px-3 transition-colors duration-150 ${
                   viewMode === 'list'
-                    ? 'bg-adam-neutral-950 text-adam-neutral-50'
-                    : 'text-adam-neutral-400 hover:bg-transparent hover:text-adam-neutral-50'
+                    ? 'bg-adam-neutral-950 text-adam-neutral-50 hover:bg-adam-neutral-950 hover:text-adam-neutral-50'
+                    : 'text-adam-neutral-400 hover:bg-adam-neutral-950/40 hover:text-adam-neutral-50'
                 }`}
               >
                 <List className="mr-2 h-4 w-4" />
@@ -315,11 +321,13 @@ export function HistoryView() {
               <Button
                 variant="ghost"
                 size="sm"
+                aria-pressed={viewMode === 'visual'}
+                aria-label="Visual view"
                 onClick={() => setViewMode('visual')}
-                className={`h-8 px-3 ${
+                className={`h-8 px-3 transition-colors duration-150 ${
                   viewMode === 'visual'
-                    ? 'bg-adam-neutral-950 text-adam-neutral-50'
-                    : 'text-adam-neutral-400 hover:bg-transparent hover:text-adam-neutral-50'
+                    ? 'bg-adam-neutral-950 text-adam-neutral-50 hover:bg-adam-neutral-950 hover:text-adam-neutral-50'
+                    : 'text-adam-neutral-400 hover:bg-adam-neutral-950/40 hover:text-adam-neutral-50'
                 }`}
               >
                 <LayoutGrid className="mr-2 h-4 w-4" />

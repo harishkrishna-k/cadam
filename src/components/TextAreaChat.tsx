@@ -18,7 +18,12 @@ import {
   Box,
   X,
 } from 'lucide-react';
-import { cn, CREATIVE_MODELS, PARAMETRIC_MODELS } from '@/lib/utils';
+import {
+  cn,
+  CREATIVE_MODELS,
+  PARAMETRIC_MODELS,
+  parametricModelSupportsVision,
+} from '@/lib/utils';
 import { Content, CreativeModel, MeshFileType, Model } from '@shared/types';
 import {
   shouldShowPolygonControls,
@@ -1566,36 +1571,39 @@ function TextAreaChat({
         </div>
         <div className="flex items-center justify-between border-t border-[#2a2a2a] p-3">
           <div className="flex items-center gap-1">
-            <div
-              className={cn(
-                'transition-all duration-300 ease-out',
-                'pointer-events-auto scale-100 opacity-100',
-              )}
-            >
-              <Button
-                variant="outline"
-                className="flex h-8 w-8 items-center gap-2 rounded-lg border border-[#2a2a2a] bg-adam-background-2 p-0 text-sm text-adam-text-secondary hover:bg-adam-bg-secondary-dark"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const input = document.createElement('input');
-                  input.type = 'file';
-                  input.accept = `${VALID_IMAGE_FORMATS.join(', ')}, ${
-                    type === 'creative'
-                      ? SUPPORTED_MESH_EXTENSIONS.join(', ')
-                      : '.stl'
-                  }`;
-                  input.onchange = (event) => {
-                    handleItemsChange(
-                      event as unknown as ChangeEvent<HTMLInputElement>,
-                    );
-                  };
-                  input.click();
-                }}
-                disabled={disabled}
+            {(type !== 'parametric' ||
+              parametricModelSupportsVision(model)) && (
+              <div
+                className={cn(
+                  'transition-all duration-300 ease-out',
+                  'pointer-events-auto scale-100 opacity-100',
+                )}
               >
-                <ImagePlus className="h-5 w-5" />
-              </Button>
-            </div>
+                <Button
+                  variant="outline"
+                  className="flex h-8 w-8 items-center gap-2 rounded-lg border border-[#2a2a2a] bg-adam-background-2 p-0 text-sm text-adam-text-secondary hover:bg-adam-bg-secondary-dark"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = `${VALID_IMAGE_FORMATS.join(', ')}, ${
+                      type === 'creative'
+                        ? SUPPORTED_MESH_EXTENSIONS.join(', ')
+                        : '.stl'
+                    }`;
+                    input.onchange = (event) => {
+                      handleItemsChange(
+                        event as unknown as ChangeEvent<HTMLInputElement>,
+                      );
+                    };
+                    input.click();
+                  }}
+                  disabled={disabled}
+                >
+                  <ImagePlus className="h-5 w-5" />
+                </Button>
+              </div>
+            )}
 
             {/* Creative mode toggle button */}
             {onTypeChange && (

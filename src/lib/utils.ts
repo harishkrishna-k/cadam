@@ -246,8 +246,8 @@ export const PARAMETRIC_MODELS: ModelConfig[] = [
     supportsVision: true,
   },
   {
-    id: 'anthropic/claude-opus-4.6',
-    name: 'Claude Opus 4.6',
+    id: 'anthropic/claude-opus-4.7',
+    name: 'Claude Opus 4.7',
     description: 'Most powerful Anthropic model for complex reasoning',
     provider: 'Anthropic',
     supportsTools: true,
@@ -255,22 +255,22 @@ export const PARAMETRIC_MODELS: ModelConfig[] = [
     supportsVision: true,
   },
   {
-    id: 'openai/gpt-5.2',
-    name: 'GPT-5.2',
-    description: 'Most powerful OpenAI model with adaptive reasoning',
+    id: 'openai/gpt-5.5',
+    name: 'GPT-5.5',
+    description: 'Latest OpenAI model for reliable CAD generation',
     provider: 'OpenAI',
     supportsTools: true,
     supportsThinking: true,
     supportsVision: true,
   },
   {
-    id: 'anthropic/claude-sonnet-4.6',
-    name: 'Claude Sonnet 4.6',
-    description: 'Daily driver Anthropic model for reliable CAD generation',
-    provider: 'Anthropic',
+    id: 'deepseek/deepseek-v4-pro',
+    name: 'DeepSeek V4 Pro',
+    description: 'Long-context MoE model for complex reasoning and code',
+    provider: 'DeepSeek',
     supportsTools: true,
     supportsThinking: true,
-    supportsVision: true,
+    supportsVision: false,
   },
 ];
 
@@ -294,6 +294,14 @@ export const CREATIVE_MODELS: ModelConfig[] = [
     timeEstimate: '60-90 seconds',
   },
 ];
+
+// Whether the selected parametric model can accept image / STL-render inputs.
+// Unknown ids (e.g. historical messages tagged with a removed model) fall back
+// to `true` so legacy conversations keep rendering normally.
+export function parametricModelSupportsVision(modelId: string): boolean {
+  const cfg = PARAMETRIC_MODELS.find((m) => m.id === modelId);
+  return cfg?.supportsVision !== false;
+}
 
 export function getBackupModel({
   message,

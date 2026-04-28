@@ -3,11 +3,13 @@ import { corsHeaders } from '../_shared/cors.ts';
 import { fal } from 'npm:@fal-ai/client';
 import { GoogleGenAI } from 'npm:@google/genai';
 import Anthropic from 'npm:@anthropic-ai/sdk';
+import OpenAI from 'npm:openai@^6.34.0';
 import {
   generateImageWithFalFlux,
   generateImageWithGeminiMultiTurn,
-  generateImageWithGeminiFlash,
-  generateImageWithGeminiFlashEdit,
+  generateImageWithGptImage2,
+  INSTRUCTIONS_3D as instructions3D,
+  type GptImageQuality,
 } from '../_shared/imageGen.ts';
 import { Model, MeshFileType } from '@shared/types.ts';
 import {
@@ -15,8 +17,11 @@ import {
   SupabaseClient,
 } from '../_shared/supabaseClient.ts';
 import { reformatSignedUrl } from '../_shared/messageUtils.ts';
+import { billing, BillingClientError } from '../_shared/billingClient.ts';
 import { initSentry, logError, logApiError } from '../_shared/sentry.ts';
 import { Buffer } from 'node:buffer';
+
+const MESH_TOKEN_COST = 30;
 
 // Initialize Sentry for error logging
 initSentry();
@@ -31,55 +36,239 @@ const debugLog = (...args: unknown[]) => {
   if (DEBUG_LOGS) console.log(...args);
 };
 
-// Helper function to get a signed URL for an image, with existence verification
-async function getSignedImageUrl(
+// Returns the image_generation_call_id to thread into the next gpt-image-2
+// call, or null when the prior image was produced by a fallback (Gemini/Flux)
+// and has no call ID.
+//
+// Branch-aware: when the user is editing a specific mesh (via the `mesh`
+// request param), we prefer that mesh's latest image — otherwise a global
+// "most recent in conversation" lookup would grab a sibling-branch image the
+// user isn't looking at, and gpt-image-2 would silently edit the wrong
+// output. Without a specific mesh in focus, fall back to conversation-wide
+// latest (linear editing flow).
+//
+// We do NOT filter for non-null call IDs: if the last turn fell back,
+// skipping its null row and surfacing an older gpt-image-2 call ID would
+// make gpt-image-2 edit an image two turns ago while the user is looking
+// at the fallback output.
+async function getPriorImageCallId(
   supabaseClient: SupabaseClient,
   userId: string,
   conversationId: string,
-  imageIdOrUrl: string,
-): Promise<string> {
-  // If it's already a URL, return it as-is
-  if (imageIdOrUrl.startsWith('http')) {
-    return imageIdOrUrl;
+  preferMeshId: string | undefined,
+): Promise<string | null> {
+  if (preferMeshId) {
+    // CRITICAL: filter by user_id + conversation_id here. preferMeshId comes
+    // from the untrusted request body, and the service-role client bypasses
+    // RLS. Without this filter, a user could pass another user's mesh UUID
+    // to thread the victim's OpenAI multi-turn continuity ID into their own
+    // gpt-image-2 call.
+    const { data: meshRow } = await supabaseClient
+      .from('meshes')
+      .select('images')
+      .eq('id', preferMeshId)
+      .eq('user_id', userId)
+      .eq('conversation_id', conversationId)
+      .maybeSingle();
+    const meshImageIds = Array.isArray(meshRow?.images)
+      ? (meshRow.images as string[])
+      : [];
+    if (meshImageIds.length > 0) {
+      const { data } = await supabaseClient
+        .from('images')
+        .select('image_generation_call_id')
+        .in('id', meshImageIds)
+        .eq('user_id', userId)
+        .eq('conversation_id', conversationId)
+        .eq('status', 'success')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      return data?.[0]?.image_generation_call_id ?? null;
+    }
   }
 
-  // It's a filename/ID, verify the image exists and get a signed URL
-  const imagePath = `${userId}/${conversationId}/${imageIdOrUrl}`;
-  debugLog(`Checking if image exists at path: ${imagePath}`);
-
-  // First verify the image exists
-  const existsResult = await supabaseClient.storage
+  const { data } = await supabaseClient
     .from('images')
-    .exists(imagePath);
+    .select('image_generation_call_id')
+    .eq('conversation_id', conversationId)
+    .eq('user_id', userId)
+    .eq('status', 'success')
+    .order('created_at', { ascending: false })
+    .limit(1);
 
-  if (existsResult.error) {
-    debugLog(`Failed to check image existence: ${existsResult.error.message}`);
-    throw new Error(
-      `Failed to check image existence: ${existsResult.error.message}`,
+  return data?.[0]?.image_generation_call_id ?? null;
+}
+
+// Unified mesh-image generation. Every mesh mode goes through this helper:
+//   1. Primary: gpt-image-2 via OpenAI Responses API (canonical per OpenAI
+//      docs, supports multi-turn via image_generation_call id)
+//   2. Fallback 1: Gemini 3 Pro Image Preview (nano banana pro)
+//   3. Fallback 2: Flux (fal-ai)
+//
+// Flux is also the sole provider for mesh previews (see submitPreviewJob),
+// which intentionally does not go through this chain.
+// Per-mode gpt-image-2 quality. fast mode defaults to `low` ($0.006/image,
+// cheaper than the Flux it replaced) since fast-mode output is inherently
+// draft quality. quality/ultra use `high` ($0.21/image) for final seed
+// fidelity. See https://developers.openai.com/api/docs/guides/image-generation
+// for pricing tiers.
+const QUALITY_BY_MESH_MODEL: Record<
+  'fast' | 'quality' | 'ultra',
+  GptImageQuality
+> = {
+  fast: 'low',
+  quality: 'high',
+  ultra: 'high',
+};
+
+async function generateMeshImage(
+  userId: string,
+  conversationId: string,
+  prompt: string,
+  // Fresh references uploaded in *this* turn — take precedence for base64.
+  freshUserImages: string[],
+  // All available reference images in the conversation (includes mesh
+  // previews and prior mesh images) — used when no fresh upload.
+  allImages: string[],
+  // The specific mesh the user is editing from (branch anchor), if any.
+  // Makes the multi-turn lookup branch-aware.
+  priorMeshId: string | undefined,
+  sentryStage: { meshModel: 'fast' | 'quality' | 'ultra'; subStage?: string },
+): Promise<{
+  imageBytes: Buffer;
+  imageCallId: string | null;
+  contentType: 'image/jpeg' | 'image/png';
+}> {
+  const hasFreshUserImages = freshUserImages.length > 0;
+  // Skip the call-id lookup when the user is providing fresh reference
+  // material — we want gpt-image-2 to anchor on the new upload, not a
+  // prior turn's output.
+  let priorImageCallId: string | null;
+  // Tri-state for observability so Sentry breadcrumbs distinguish
+  // "threaded a prior id", "no prior existed" (or prior was a fallback),
+  // and "prior existed but we suppressed it because the user uploaded
+  // fresh reference material this turn".
+  let priorImageCallIdStatus:
+    | 'threaded'
+    | 'none_available'
+    | 'suppressed_by_fresh_upload';
+  if (hasFreshUserImages) {
+    priorImageCallId = null;
+    priorImageCallIdStatus = 'suppressed_by_fresh_upload';
+  } else {
+    priorImageCallId = await getPriorImageCallId(
+      supabaseClient,
+      userId,
+      conversationId,
+      priorMeshId,
     );
+    priorImageCallIdStatus =
+      priorImageCallId !== null ? 'threaded' : 'none_available';
   }
+  const gptImageReferenceImages = hasFreshUserImages
+    ? freshUserImages
+    : allImages;
 
-  if (!existsResult.data) {
-    debugLog(`Image not found at path: ${imagePath}`);
-    throw new Error(`Image not found: ${imageIdOrUrl}`);
-  }
+  const sentryContext = {
+    functionName: 'mesh' as const,
+    statusCode: 500,
+    userId,
+    conversationId,
+  };
 
-  // Create a signed URL for the image (external APIs need publicly accessible URLs)
-  // 1 hour expiry is sufficient for image processing operations
-  const { data: signedUrlData, error: signedUrlError } =
-    await supabaseClient.storage
-      .from('images')
-      .createSignedUrl(imagePath, 60 * 60);
+  let provider: 'gpt-image-2' | 'nano-banana-pro' | 'flux';
+  let result: {
+    imageBytes: Buffer;
+    imageCallId: string | null;
+    contentType: 'image/jpeg' | 'image/png';
+  };
 
-  if (signedUrlError || !signedUrlData?.signedUrl) {
-    debugLog(`Failed to create signed URL: ${signedUrlError?.message}`);
-    throw new Error(
-      `Failed to create signed URL for image: ${signedUrlError?.message}`,
+  try {
+    result = await generateImageWithGptImage2(
+      supabaseClient,
+      openAI,
+      userId,
+      conversationId,
+      prompt,
+      gptImageReferenceImages,
+      priorImageCallId,
+      QUALITY_BY_MESH_MODEL[sentryStage.meshModel],
     );
+    provider = 'gpt-image-2';
+  } catch (gptImageError) {
+    logError(gptImageError, {
+      ...sentryContext,
+      additionalContext: {
+        stage: 'gpt_image_2_fallback',
+        hasFreshUserImages,
+        priorImageCallIdStatus,
+        ...sentryStage,
+      },
+    });
+    try {
+      const imageBytes = await generateImageWithGeminiMultiTurn(
+        supabaseClient,
+        googleGenAI,
+        userId,
+        conversationId,
+        prompt,
+        gptImageReferenceImages,
+      );
+      // Gemini Multi-Turn returns png.
+      result = { imageBytes, imageCallId: null, contentType: 'image/png' };
+      provider = 'nano-banana-pro';
+    } catch (geminiError) {
+      logError(geminiError, {
+        ...sentryContext,
+        additionalContext: {
+          stage: 'nano_banana_pro_fallback',
+          hasFreshUserImages,
+          priorImageCallIdStatus,
+          ...sentryStage,
+        },
+      });
+      try {
+        const imageBytes = await generateImageWithFalFlux(
+          supabaseClient,
+          userId,
+          conversationId,
+          prompt,
+          gptImageReferenceImages,
+        );
+        // Flux returns png per its output_format config.
+        result = { imageBytes, imageCallId: null, contentType: 'image/png' };
+        provider = 'flux';
+      } catch (fluxError) {
+        logError(fluxError, {
+          ...sentryContext,
+          additionalContext: {
+            stage: 'flux_fallback',
+            hasFreshUserImages,
+            priorImageCallIdStatus,
+            ...sentryStage,
+          },
+        });
+        throw fluxError;
+      }
+    }
   }
 
-  // Use reformatSignedUrl to ensure the URL is properly formatted for external access
-  return reformatSignedUrl(signedUrlData.signedUrl);
+  // Diagnostic log — gated on DEBUG_LOGS. In prod, ground truth comes from:
+  //   - images.image_generation_call_id (null = fallback ran, non-null = gpt-image-2)
+  //   - Sentry events tagged stage=gpt_image_2_fallback / nano_banana_pro_fallback
+  //     / flux_fallback with full meshModel + subStage context
+  // This line stays opt-in for live debugging without polluting prod logs.
+  debugLog(
+    `[mesh] image_gen provider=${provider} meshModel=${sentryStage.meshModel}` +
+      (sentryStage.subStage ? ` subStage=${sentryStage.subStage}` : '') +
+      (provider === 'gpt-image-2'
+        ? ` quality=${QUALITY_BY_MESH_MODEL[sentryStage.meshModel]}`
+        : '') +
+      ` contentType=${result.contentType}` +
+      ` callId=${result.imageCallId ?? 'none'}`,
+  );
+
+  return result;
 }
 
 // Helper function to get the most recent mesh preview from the conversation
@@ -131,6 +320,11 @@ fal.config({
 // Initialize Google GenAI client
 const googleGenAI = new GoogleGenAI({
   apiKey: Deno.env.get('GOOGLE_API_KEY') ?? '',
+});
+
+// Initialize OpenAI client for gpt-image-2 via Responses API
+const openAI = new OpenAI({
+  apiKey: Deno.env.get('OPENAI_API_KEY') ?? '',
 });
 
 const supabaseClient = getServiceRoleSupabaseClient();
@@ -213,60 +407,51 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Deduct tokens for mesh operation using service role client
-    const serviceClient = getServiceRoleSupabaseClient();
-    const { data: rawTokenResult, error: tokenError } = await serviceClient.rpc(
-      'deduct_tokens',
-      {
-        p_user_id: userData.user.id,
-        p_operation: 'mesh',
-      },
-    );
-
-    const tokenResult = rawTokenResult as {
-      success: boolean;
-      tokensRequired?: number;
-      tokensAvailable?: number;
-    } | null;
-
-    if (tokenError || !tokenResult) {
-      logError(tokenError ?? new Error('Token deduction returned null'), {
-        functionName: 'mesh',
-        statusCode: 500,
-        userId: userData.user?.id,
-      });
+    // Deduct tokens for mesh operation via adam-billing
+    if (!userData.user.email) {
       return new Response(
-        JSON.stringify({
-          error: { message: tokenError?.message ?? 'Token deduction failed' },
-        }),
+        JSON.stringify({ error: { message: 'User email missing' } }),
         {
-          status: 500,
+          status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         },
       );
     }
 
-    if (!tokenResult.success) {
-      logError(new Error('Insufficient tokens'), {
+    const meshReferenceId = crypto.randomUUID();
+    try {
+      const result = await billing.consume(userData.user.email, {
+        tokens: MESH_TOKEN_COST,
+        operation: 'mesh',
+        referenceId: meshReferenceId,
+      });
+      if (!result.ok) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'insufficient_tokens',
+              code: 'insufficient_tokens',
+              tokensRequired: result.tokensRequired,
+              tokensAvailable: result.tokensAvailable,
+            },
+          }),
+          {
+            status: 402,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          },
+        );
+      }
+    } catch (err) {
+      const status = err instanceof BillingClientError ? err.status : 502;
+      logError(err, {
         functionName: 'mesh',
-        statusCode: 402,
-        userId: userData.user?.id,
-        additionalContext: {
-          tokensRequired: tokenResult.tokensRequired,
-          tokensAvailable: tokenResult.tokensAvailable,
-        },
+        statusCode: status,
+        userId: userData.user.id,
       });
       return new Response(
-        JSON.stringify({
-          error: {
-            message: 'insufficient_tokens',
-            code: 'insufficient_tokens',
-            tokensRequired: tokenResult.tokensRequired,
-            tokensAvailable: tokenResult.tokensAvailable,
-          },
-        }),
+        JSON.stringify({ error: { message: 'billing_unavailable' } }),
         {
-          status: 402,
+          status: 502,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         },
       );
@@ -365,12 +550,26 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Upload to FAL storage
-      const imageFile = new File([imageBlob], 'seed-image.png', {
-        type: 'image/png',
+      // Upload to FAL storage. Preserve the blob's actual MIME — seed
+      // images from gpt-image-2 are jpeg, seeds from Gemini/Flux are png.
+      // FAL serves the uploaded bytes with the Content-Type we give it,
+      // and Hunyuan3D's image decoder relies on extension + MIME matching
+      // the actual bytes; hardcoding png would fail on jpeg seeds.
+      const seedMime =
+        imageBlob.type && imageBlob.type.startsWith('image/')
+          ? imageBlob.type
+          : 'image/png';
+      const seedExt =
+        seedMime === 'image/jpeg'
+          ? 'jpg'
+          : seedMime === 'image/webp'
+            ? 'webp'
+            : 'png';
+      const imageFile = new File([imageBlob], `seed-image.${seedExt}`, {
+        type: seedMime,
       });
       const imageUrl = await fal.storage.upload(imageFile);
-      debugLog('Uploaded seed image to FAL:', imageUrl);
+      debugLog('Uploaded seed image to FAL:', imageUrl, { seedMime });
 
       // Create new mesh entry for upscaled result
       const { data: newMeshData, error: newMeshError } = await supabaseClient
@@ -429,7 +628,7 @@ Deno.serve(async (req) => {
 
             // Stream the message generation using Claude
             const stream = await anthropic.messages.create({
-              model: 'claude-3-haiku-20240307',
+              model: 'claude-haiku-4-5-20251001',
               max_tokens: 100,
               system: upscaleSystemPrompt,
               messages: [
@@ -488,16 +687,35 @@ Deno.serve(async (req) => {
                 : Deno.env.get('SUPABASE_URL')
               )?.trim() ?? '';
 
-            await fal.queue.submit('fal-ai/hunyuan3d-v3/image-to-3d', {
-              input: {
-                input_image_url: imageUrl,
-                enable_pbr: true,
-                face_count: 500000,
-              },
-              webhookUrl: `${supabaseHost}/functions/v1/fal-webhook?id=${newMeshData.id}`,
-            });
-
-            debugLog('Successfully submitted to Hunyuan3D V3 for upscaling');
+            const hunyuanInput = {
+              input_image_url: imageUrl,
+              enable_pbr: true,
+              face_count: 500000,
+            };
+            try {
+              await fal.queue.submit('fal-ai/hunyuan-3d/v3.1/pro/image-to-3d', {
+                input: hunyuanInput,
+                webhookUrl: `${supabaseHost}/functions/v1/fal-webhook?id=${newMeshData.id}`,
+              });
+              debugLog(
+                'Successfully submitted to Hunyuan3D v3.1 Pro for upscaling',
+              );
+            } catch (submitError) {
+              const errObj = submitError as {
+                body?: unknown;
+                status?: number;
+              };
+              console.error('Hunyuan v3.1 Pro submit failed:', {
+                message:
+                  submitError instanceof Error
+                    ? submitError.message
+                    : String(submitError),
+                status: errObj?.status,
+                body: errObj?.body,
+                input: hunyuanInput,
+              });
+              throw submitError;
+            }
 
             // Create a preview for the upscaled mesh (non-blocking)
             createHunyuanPreview(
@@ -821,47 +1039,26 @@ async function submitMeshJob(
           })
           .eq('id', meshId);
 
-        const instructions3D =
-          'You are generating a fully textured and rendered 3D model. Output one centered 3D model or multiple centered objects, no text. Plain white background (or an empty background which provides optimal contrast with the textures of the 3D model), neutral lighting, and a soft shadow directly under the 3D model. Keep the entire object fully in-frame with 5–10% padding; no cropping. Make sure the description strongly impacts the form and shape of the 3D Model not just the surface texture';
-
         const newPrompt =
           allImages.length > 0
             ? `${instructions3D} Edit the provided image(s) to: ${text}`
             : `${instructions3D} Generate a new image: ${text}`;
 
-        let imageBytes: Buffer;
-
-        try {
-          // Try Gemini Multi-Turn first
-          debugLog('Attempting image generation with Gemini Multi-Turn');
-          imageBytes = await generateImageWithGeminiMultiTurn(
-            supabaseClient,
-            googleGenAI,
+        const { imageBytes, imageCallId, contentType } =
+          await generateMeshImage(
             userId,
             conversationId,
             newPrompt,
+            images ?? [],
             allImages,
+            mesh,
+            { meshModel: 'quality' },
           );
-          debugLog('Successfully generated image with Gemini Multi-Turn');
-        } catch (geminiError) {
-          debugLog(
-            'Gemini Multi-Turn failed, falling back to Flux:',
-            geminiError,
-          );
-          // Fall back to Flux
-          imageBytes = await generateImageWithFalFlux(
-            supabaseClient,
-            userId,
-            conversationId,
-            newPrompt,
-            allImages,
-          );
-        }
 
         const { error: imageUploadError } = await supabaseClient.storage
           .from('images')
           .upload(`${userId}/${conversationId}/${imageData.id}`, imageBytes, {
-            contentType: 'image/png',
+            contentType,
           });
 
         if (imageUploadError) {
@@ -872,6 +1069,7 @@ async function submitMeshJob(
           .from('images')
           .update({
             status: 'success',
+            image_generation_call_id: imageCallId,
           })
           .eq('id', imageData.id);
 
@@ -916,26 +1114,26 @@ async function submitMeshJob(
           })
           .eq('id', meshId);
 
-        const instructions3D =
-          'You are generating a fully textured and rendered 3D model. Output one centered 3D model or multiple centered objects, no text. Plain white background (or an empty background which provides optimal contrast with the textures of the 3D model), neutral lighting, and a soft shadow directly under the 3D model. Keep the entire object fully in-frame with 5–10% padding; no cropping. Make sure the description strongly impacts the form and shape of the 3D Model not just the surface texture';
-
         const newPrompt =
           allImages.length > 0
             ? `${instructions3D} Edit the provided image(s) to: ${text}`
             : `${instructions3D} Generate a new image: ${text}`;
 
-        const imageBytes = await generateImageWithFalFlux(
-          supabaseClient,
-          userId,
-          conversationId,
-          newPrompt,
-          allImages,
-        );
+        const { imageBytes, imageCallId, contentType } =
+          await generateMeshImage(
+            userId,
+            conversationId,
+            newPrompt,
+            images ?? [],
+            allImages,
+            mesh,
+            { meshModel: 'fast' },
+          );
 
         const { error: imageUploadError } = await supabaseClient.storage
           .from('images')
           .upload(`${userId}/${conversationId}/${imageData.id}`, imageBytes, {
-            contentType: 'image/png',
+            contentType,
           });
 
         if (imageUploadError) {
@@ -944,7 +1142,10 @@ async function submitMeshJob(
 
         await supabaseClient
           .from('images')
-          .update({ status: 'success' })
+          .update({
+            status: 'success',
+            image_generation_call_id: imageCallId,
+          })
           .eq('id', imageData.id);
 
         const { data: imageSignedUrl, error: imageSignedUrlError } =
@@ -1020,17 +1221,8 @@ async function submitMeshJob(
       const hasUploadedImages = allImages.length > 0;
       const hasText = text && text.trim() !== '';
 
-      // Determine generation method
-      // First generation: Use Gemini Flash for text-only, Gemini Flash edit for image uploads
-      // Conversational edits: Use Gemini Multi-Turn to maintain full context
-      const useGeminiFlash = isFirstGeneration && !hasUploadedImages && hasText;
-      const useGeminiFlashEdit = isFirstGeneration && hasUploadedImages;
-
       debugLog(
         `Ultra generation type: First=${isFirstGeneration}, HasImages=${hasUploadedImages}, HasText=${hasText}`,
-      );
-      debugLog(
-        `Using: ${useGeminiFlash ? 'Gemini Flash (first text-only)' : useGeminiFlashEdit ? 'Gemini Flash edit (first with images)' : 'Gemini Multi-Turn (conversational)'}`,
       );
 
       // Validate we have something to work with
@@ -1065,68 +1257,45 @@ async function submitMeshJob(
         })
         .eq('id', meshId);
 
-      // Use consistent instructions for base image generation
-      const instructions3D =
-        'You are generating a fully textured and rendered 3D model. Output one centered 3D model or multiple centered objects, no text. Plain white background (or an empty background which provides optimal contrast with the textures of the 3D model), neutral lighting, and a soft shadow directly under the 3D model. Keep the entire object fully in-frame with 5–10% padding; no cropping. Make sure the description strongly impacts the form and shape of the 3D Model not just the surface texture';
+      // Use the shared INSTRUCTIONS_3D preamble (imported as instructions3D).
 
-      let imageBytes: Buffer;
-
-      if (useGeminiFlash) {
-        const flashPrompt = `${instructions3D} Generate: ${text}`;
-        imageBytes = await generateImageWithGeminiFlash(
-          googleGenAI,
-          flashPrompt,
-        );
-      } else if (useGeminiFlashEdit) {
-        const uploadedImage = allImages[0];
-        const baseImageUrl = await getSignedImageUrl(
-          supabaseClient,
-          userId,
-          conversationId,
-          uploadedImage,
-        );
-        const flashEditPrompt = hasText
+      // Build the prompt based on conversation stage.
+      let ultraPrompt: string;
+      let ultraSubStage: string;
+      if (isFirstGeneration && !hasUploadedImages && hasText) {
+        ultraPrompt = `${instructions3D} Generate: ${text}`;
+        ultraSubStage = 'first_gen_text_only';
+      } else if (isFirstGeneration && hasUploadedImages) {
+        ultraPrompt = hasText
           ? `${instructions3D} Edit this image to: ${text}`
           : `${instructions3D} Enhance and optimize this image for 3D model generation`;
-        imageBytes = await generateImageWithGeminiFlashEdit(
-          googleGenAI,
-          flashEditPrompt,
-          baseImageUrl,
-        );
+        ultraSubStage = 'first_gen_with_upload';
       } else {
-        const conversationalPrompt = hasUploadedImages
+        ultraPrompt = hasUploadedImages
           ? hasText
             ? `${instructions3D} Edit the provided image(s) to: ${text}`
             : `${instructions3D} Enhance and optimize the provided image(s) for 3D model generation`
           : hasText
             ? `${instructions3D} Edit/modify the previous generation: ${text}`
             : `${instructions3D} Enhance and optimize the previous generation`;
-
-        try {
-          imageBytes = await generateImageWithGeminiMultiTurn(
-            supabaseClient,
-            googleGenAI,
-            userId,
-            conversationId,
-            conversationalPrompt,
-            allImages,
-          );
-        } catch (_fallbackError) {
-          imageBytes = await generateImageWithFalFlux(
-            supabaseClient,
-            userId,
-            conversationId,
-            conversationalPrompt,
-            allImages,
-          );
-        }
+        ultraSubStage = 'conversational';
       }
+
+      const { imageBytes, imageCallId, contentType } = await generateMeshImage(
+        userId,
+        conversationId,
+        ultraPrompt,
+        images ?? [],
+        allImages,
+        mesh,
+        { meshModel: 'ultra', subStage: ultraSubStage },
+      );
 
       // Upload the generated base image
       const { error: imageUploadError } = await supabaseClient.storage
         .from('images')
         .upload(`${userId}/${conversationId}/${imageData.id}`, imageBytes, {
-          contentType: 'image/png',
+          contentType,
         });
 
       if (imageUploadError) {
@@ -1135,7 +1304,10 @@ async function submitMeshJob(
 
       await supabaseClient
         .from('images')
-        .update({ status: 'success' })
+        .update({
+          status: 'success',
+          image_generation_call_id: imageCallId,
+        })
         .eq('id', imageData.id);
 
       // Get signed URL for the base image to send to Meshy
@@ -1401,7 +1573,9 @@ Output:`;
         throw new Error('No valid image found for textureless mesh generation');
       }
 
-      // Submit to Tripo with the generated image
+      // Submit to Tripo v2.5 with the generated image
+      // NOTE: H3.1 (newer model) currently returns downstream_service_error on
+      // textureless requests (Tripo-side 500). Reverted to v2.5 until fixed.
       const tripoInput = {
         image_url: imageInputs[0],
         texture: 'no' as const,
@@ -1411,13 +1585,27 @@ Output:`;
           ? { face_limit: Math.min(polygonCount, TEXTURELESS_MAX_POLYGONS) }
           : { face_limit: TEXTURELESS_MAX_POLYGONS }),
       };
-      await fal.queue.submit('tripo3d/tripo/v2.5/image-to-3d', {
-        input: tripoInput,
-        webhookUrl: `${supabaseHost}/functions/v1/fal-webhook?id=${meshId}`,
-      });
-      debugLog(
-        'Successfully submitted to Tripo textureless with conversational context',
-      );
+      try {
+        await fal.queue.submit('tripo3d/tripo/v2.5/image-to-3d', {
+          input: tripoInput,
+          webhookUrl: `${supabaseHost}/functions/v1/fal-webhook?id=${meshId}`,
+        });
+        debugLog(
+          'Successfully submitted to Tripo v2.5 textureless with conversational context',
+        );
+      } catch (submitError) {
+        const errObj = submitError as { body?: unknown; status?: number };
+        console.error('Tripo v2.5 submit failed:', {
+          message:
+            submitError instanceof Error
+              ? submitError.message
+              : String(submitError),
+          status: errObj?.status,
+          body: errObj?.body,
+          input: tripoInput,
+        });
+        throw submitError;
+      }
 
       // Create preview using the generated image
       await createHunyuanPreview(

@@ -161,10 +161,26 @@ class OpenSCADWrapper {
       })
       .filter((x) => !!x);
 
+    // In addition to the primary STL output (used for downloads), emit an
+    // OFF file — OpenSCAD's manifold backend preserves per-face colors in
+    // OFF (RGBA appended to each face line), which we parse client-side to
+    // render OpenSCAD color() calls. --backend=manifold is required to get
+    // the color-aware mesh; --enable=manifold was the old (now-default)
+    // experimental flag and does not alone enable color propagation.
+    // --export-format is global in OpenSCAD and overrides the per-output
+    // extension inference, so we cannot force binstl here without
+    // corrupting the /out.off companion output. Preview STL falls back to
+    // ASCII (larger, slower to parse) — the on-demand download path in
+    // exportFile() still forces binstl because it only emits one file.
+    //
+    // Multi-output via two -o flags (/out.stl + /out.off) is supported by
+    // the 2025.03.25 playground WASM build vendored under
+    // src/vendor/openscad-wasm: the help text notes "May be used multiple
+    // times for different exports" and we exercise both outputs on every
+    // parametric compile. If an older wasm is ever vendored, this will
+    // need re-verification.
     const exportParams = [
-      '--export-format=binstl',
-      '--enable=manifold',
-      '--enable=fast-csg',
+      '--backend=manifold',
       '--enable=lazy-union',
       '--enable=roof',
     ];
@@ -173,6 +189,7 @@ class OpenSCADWrapper {
       data.code,
       data.fileType,
       parameters.concat(exportParams),
+      [{ path: '/out.off', key: 'off' }],
     );
 
     // Check `render.log.stdErr` for "Current top level object is not a 3d object."
@@ -180,14 +197,15 @@ class OpenSCADWrapper {
     if (
       render.log.stdErr.includes('Current top level object is not a 3D object.')
     ) {
-      // Create the SVG, which will internally be saved as out.svg
+      // Create the SVG, which will internally be saved as out.svg.
+      // Use the same flag set as the 3D path — the 2025.x build dropped
+      // --enable=manifold / --enable=fast-csg in favor of --backend=manifold.
       const svgExport = await this.executeOpenscad(
         data.code,
         'svg',
         parameters.concat([
           '--export-format=svg',
-          '--enable=manifold',
-          '--enable=fast-csg',
+          '--backend=manifold',
           '--enable=lazy-union',
           '--enable=roof',
         ]),
@@ -277,6 +295,7 @@ class OpenSCADWrapper {
     code: string,
     fileType: string,
     parameters: string[],
+    extraOutputs: { path: string; key: string }[] = [],
   ): Promise<OpenSCADWorkerResponseData> {
     const start = Date.now();
 
@@ -342,9 +361,17 @@ class OpenSCADWrapper {
       }
     }
 
-    const args = [inputFile, '-o', outputFile, ...parameters];
+    const extraOutputArgs = extraOutputs.flatMap(({ path }) => ['-o', path]);
+    const args = [
+      inputFile,
+      '-o',
+      outputFile,
+      ...extraOutputArgs,
+      ...parameters,
+    ];
     let exitCode;
     let output;
+    const extras: Record<string, Uint8Array> = {};
 
     try {
       exitCode = instance.callMain(args);
@@ -366,6 +393,14 @@ class OpenSCADWrapper {
           throw new Error('Adam cannot read created file');
         }
       }
+
+      for (const { path, key } of extraOutputs) {
+        try {
+          extras[key] = instance.FS.readFile(path, { encoding: 'binary' });
+        } catch {
+          // Missing extra output is non-fatal.
+        }
+      }
     } else {
       throw new OpenSCADError(
         'Adam did not exit correctly',
@@ -380,6 +415,7 @@ class OpenSCADWrapper {
       duration: Date.now() - start,
       log: this.log,
       fileType,
+      extraOutputs: Object.keys(extras).length > 0 ? extras : undefined,
     };
   }
 

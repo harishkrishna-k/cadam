@@ -12,6 +12,8 @@ import {
   ImageIcon,
   Sparkles,
 } from 'lucide-react';
+import { Streamdown } from 'streamdown';
+import { StreamingCodeBlock } from '@/components/chat/StreamingCodeBlock';
 import { Button } from '@/components/ui/button';
 import { RefreshCw } from 'lucide-react';
 import { Avatar, AvatarImage } from '@/components/ui/avatar';
@@ -23,7 +25,7 @@ import {
 } from '@/lib/utils';
 import { Link } from 'react-router-dom';
 import { TrialDialog } from '@/components/auth/TrialDialog';
-import { useAuth } from '@/contexts/AuthContext';
+import { getLevel, useAuth } from '@/contexts/AuthContext';
 import { ImageViewer } from '@/components/ImageViewer';
 import { useConversation } from '@/contexts/ConversationContext';
 import {
@@ -45,27 +47,11 @@ import { useMeshData } from '@/hooks/useMeshData';
 import { MeshImagePreview } from '@/components/viewer/MeshImagePreview';
 import { TreeNode } from '@shared/Tree';
 
-const renderTextWithParametricLink = (text: string) => {
-  const parts = text.split(/(parametric mode)/gi);
-
-  return parts.map((part, index) => {
-    if (part.toLowerCase() === 'parametric mode') {
-      return (
-        <a
-          key={index}
-          href="https://adam.new/cadam"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ color: '#00A6FF' }}
-          className="underline hover:opacity-80"
-        >
-          {part}
-        </a>
-      );
-    }
-    return part;
-  });
-};
+const linkParametricMode = (text: string) =>
+  text.replace(
+    /(```[\s\S]*?```|`[^`\n]*`)|parametric mode/gi,
+    (match, codeSpan) => codeSpan ?? `[${match}](https://adam.new/cadam)`,
+  );
 
 interface AssistantMessageProps {
   message: TreeNode<Message>;
@@ -174,6 +160,12 @@ export function AssistantMessage({
   // Check if this message is the last one in the conversation
   const isLastMessage = conversation.current_message_leaf_id === message.id;
 
+  const markdownText = useMemo(
+    () =>
+      message.content.text ? linkParametricMode(message.content.text) : '',
+    [message.content.text],
+  );
+
   return (
     <div className="flex justify-start">
       {message.role === 'assistant' && (
@@ -214,64 +206,105 @@ export function AssistantMessage({
             </>
           ) : (
             <>
+              {conversation.type === 'parametric' &&
+                !message.content.text &&
+                (!message.content.toolCalls ||
+                  message.content.toolCalls.length === 0) &&
+                !message.content.artifact &&
+                !message.content.mesh &&
+                (!message.content.images ||
+                  message.content.images.length === 0) && (
+                  <div className="flex h-10 w-full items-center justify-between overflow-hidden rounded-md bg-adam-neutral-950 px-3">
+                    <div className="flex h-full items-center justify-center gap-2">
+                      <Box className="h-4 w-4 text-white" />
+                      <span>Building CAD...</span>
+                    </div>
+                    <Loader2 className="h-4 w-4 animate-spin text-white" />
+                  </div>
+                )}
               {message.content.text ? (
-                <span className="px-1">
-                  {renderTextWithParametricLink(message.content.text)}
-                </span>
+                <Streamdown
+                  className="px-1 [&_:not(pre)>code]:rounded [&_:not(pre)>code]:bg-adam-neutral-950 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_a]:text-adam-blue [&_a]:underline hover:[&_a]:opacity-80 [&_h1]:mt-2 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:mt-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-1 [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_p:not(:last-child)]:mb-2 [&_p]:leading-relaxed [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-adam-neutral-950 [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_ul]:list-disc [&_ul]:pl-5"
+                  parseIncompleteMarkdown
+                >
+                  {markdownText}
+                </Streamdown>
               ) : null}
               {message.content.toolCalls &&
                 message.content.toolCalls.length > 0 && (
                   <div className="flex w-full flex-col gap-2">
-                    {message.content.toolCalls.map((toolCall) => (
-                      <div
-                        key={toolCall.id ?? `${toolCall.name}`}
-                        className="flex h-10 w-full items-center justify-between overflow-hidden rounded-md bg-adam-neutral-950 px-3 hover:bg-adam-neutral-900"
-                      >
-                        <div className="flex h-full items-center justify-center gap-2">
-                          {toolCall.name === 'create_image' && (
-                            <ImageIcon className="h-4 w-4 text-white" />
-                          )}
-                          {toolCall.name === 'create_mesh' && (
-                            <Box className="h-4 w-4 text-white" />
-                          )}
-                          {(toolCall.name === 'build_parametric_model' ||
-                            toolCall.name === 'apply_parameter_changes') && (
-                            <Box className="h-4 w-4 text-white" />
-                          )}
+                    {message.content.toolCalls.map((toolCall) => {
+                      // For a pending parametric build, once code starts
+                      // streaming swap the generic status row for the live
+                      // code. Before the first chunk we keep the original
+                      // "Building CAD..." row so the thinking state is clear.
+                      const streamingCode =
+                        message.content.artifact?.code ?? '';
+                      if (
+                        toolCall.name === 'build_parametric_model' &&
+                        toolCall.status === 'pending' &&
+                        streamingCode.length > 0
+                      ) {
+                        return (
+                          <StreamingCodeBlock
+                            key={toolCall.id ?? `${toolCall.name}`}
+                            code={streamingCode}
+                            isStreaming={true}
+                          />
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={toolCall.id ?? `${toolCall.name}`}
+                          className="flex h-10 w-full items-center justify-between overflow-hidden rounded-md bg-adam-neutral-950 px-3 hover:bg-adam-neutral-900"
+                        >
+                          <div className="flex h-full items-center justify-center gap-2">
+                            {toolCall.name === 'create_image' && (
+                              <ImageIcon className="h-4 w-4 text-white" />
+                            )}
+                            {toolCall.name === 'create_mesh' && (
+                              <Box className="h-4 w-4 text-white" />
+                            )}
+                            {(toolCall.name === 'build_parametric_model' ||
+                              toolCall.name === 'apply_parameter_changes') && (
+                              <Box className="h-4 w-4 text-white" />
+                            )}
+                            {toolCall.status === 'pending' && (
+                              <span>
+                                {toolCall.name === 'create_image'
+                                  ? 'Queuing image...'
+                                  : toolCall.name === 'create_mesh'
+                                    ? 'Queuing mesh...'
+                                    : toolCall.name ===
+                                          'build_parametric_model' ||
+                                        toolCall.name ===
+                                          'apply_parameter_changes'
+                                      ? 'Building CAD...'
+                                      : `${toolCall.name}...`}
+                              </span>
+                            )}
+                            {toolCall.status === 'error' && (
+                              <span>
+                                {toolCall.name === 'create_image'
+                                  ? 'Failed to start image generation'
+                                  : toolCall.name === 'create_mesh'
+                                    ? 'Failed to start mesh generation'
+                                    : toolCall.name ===
+                                          'build_parametric_model' ||
+                                        toolCall.name ===
+                                          'apply_parameter_changes'
+                                      ? 'Failed to generate CAD'
+                                      : `${toolCall.name}...`}
+                              </span>
+                            )}
+                          </div>
                           {toolCall.status === 'pending' && (
-                            <span>
-                              {toolCall.name === 'create_image'
-                                ? 'Queuing image...'
-                                : toolCall.name === 'create_mesh'
-                                  ? 'Queuing mesh...'
-                                  : toolCall.name ===
-                                        'build_parametric_model' ||
-                                      toolCall.name ===
-                                        'apply_parameter_changes'
-                                    ? 'Building CAD...'
-                                    : `${toolCall.name}...`}
-                            </span>
-                          )}
-                          {toolCall.status === 'error' && (
-                            <span>
-                              {toolCall.name === 'create_image'
-                                ? 'Failed to start image generation'
-                                : toolCall.name === 'create_mesh'
-                                  ? 'Failed to start mesh generation'
-                                  : toolCall.name ===
-                                        'build_parametric_model' ||
-                                      toolCall.name ===
-                                        'apply_parameter_changes'
-                                    ? 'Failed to generate CAD'
-                                    : `${toolCall.name}...`}
-                            </span>
+                            <Loader2 className="h-4 w-4 animate-spin text-white" />
                           )}
                         </div>
-                        {toolCall.status === 'pending' && (
-                          <Loader2 className="h-4 w-4 animate-spin text-white" />
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               <AssistantMessageImagesViewer message={message} />
@@ -293,14 +326,19 @@ export function AssistantMessage({
                   <MeshImagePreview meshId={message.content.mesh.id} />
                 </div>
               )}
-              {message.content.artifact && (
-                <ObjectButton
-                  message={message}
-                  currentMessage={currentMessage}
-                  setCurrentMessage={setCurrentMessage}
-                  currentVersion={currentVersion}
-                />
-              )}
+              {message.content.artifact &&
+                !message.content.toolCalls?.some(
+                  (c) =>
+                    c.name === 'build_parametric_model' &&
+                    c.status === 'pending',
+                ) && (
+                  <ObjectButton
+                    message={message}
+                    currentMessage={currentMessage}
+                    setCurrentMessage={setCurrentMessage}
+                    currentVersion={currentVersion}
+                  />
+                )}
             </>
           )}
 
@@ -580,14 +618,15 @@ function ImageLimitReachedMessage() {
 }
 
 function InsufficientTokensMessage() {
-  const { subscription } = useAuth();
+  const { billing } = useAuth();
+  const level = getLevel(billing);
   return (
     <span>
       You don't have enough tokens for this operation.{' '}
       <Link to="/settings" className="text-adam-blue hover:underline">
         Buy more tokens
       </Link>
-      {subscription === 'free' && (
+      {level === 'free' && (
         <>
           {' '}
           or{' '}
@@ -602,8 +641,9 @@ function InsufficientTokensMessage() {
 }
 
 function MeshLimitReachedMessage() {
-  const { subscription } = useAuth();
-  if (subscription === 'free') {
+  const { billing } = useAuth();
+  const level = getLevel(billing);
+  if (level === 'free') {
     return (
       <span>
         You have reached the limit of 3 creative generations per day. Please
@@ -616,7 +656,7 @@ function MeshLimitReachedMessage() {
     );
   }
 
-  if (subscription === 'standard') {
+  if (level === 'standard') {
     return (
       <span>
         You have reached the limit of 100 creative generations per month. Please
@@ -629,7 +669,7 @@ function MeshLimitReachedMessage() {
     );
   }
 
-  if (subscription === 'pro') {
+  if (level === 'pro') {
     return (
       <span>
         You have reached the limit of 1500 generations per month. Let us know if

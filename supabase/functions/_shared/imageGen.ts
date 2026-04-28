@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.9';
 import { GoogleGenAI, Modality } from 'npm:@google/genai';
 import { fal } from 'npm:@fal-ai/client';
+import OpenAI from 'npm:openai@^6.34.0';
 import { reformatSignedUrl } from './messageUtils.ts';
 
 const DEBUG_LOGS =
@@ -12,7 +13,7 @@ const debugLog = (...args: unknown[]) => {
 };
 
 // Shared 3D model generation instructions for consistency across all image generation services
-const INSTRUCTIONS_3D =
+export const INSTRUCTIONS_3D =
   'You are generating a fully textured and rendered 3D model. Output one centered 3D model or multiple centered objects, no text. Plain white background (or an empty background which provides optimal contrast with the textures of the 3D model), neutral lighting, and a soft shadow directly under the 3D model. Keep the entire object fully in-frame with 5–10% padding; no cropping. Make sure the description strongly impacts the form and shape of the 3D Model not just the surface texture';
 
 fal.config({
@@ -104,6 +105,146 @@ export const generateImageWithGemini = async (
 };
 */
 
+export type GptImageQuality = 'low' | 'medium' | 'high';
+
+export type GptImage2Result = {
+  imageBytes: Buffer;
+  imageCallId: string | null;
+  // MIME of the returned bytes — gpt-image-2 returns jpeg per our tool
+  // config. Callers must use this when persisting to storage so the
+  // Content-Type header matches the actual bytes.
+  contentType: 'image/jpeg';
+};
+
+/**
+ * Generates an image with gpt-image-2 via the OpenAI Responses API.
+ * This is the default image model for mesh mode.
+ *
+ * Multi-turn: when `priorImageCallId` is provided, the prior
+ * image_generation_call is referenced by ID (the canonical edit pattern)
+ * instead of re-encoding the image as base64. Newly uploaded references
+ * (no prior call ID) fall through to input_image base64.
+ *
+ * Output format: jpeg. Per OpenAI's docs, jpeg is faster than png with
+ * the image_generation tool, and our downstream 3D pipelines don't need
+ * alpha (we also set background=opaque). Latency win.
+ */
+export const generateImageWithGptImage2 = async (
+  supabaseClient: SupabaseClient,
+  openAI: OpenAI,
+  userId: string,
+  conversationId: string,
+  prompt: string,
+  images: string[],
+  priorImageCallId: string | null,
+  // 'low' (~$0.006) for fast/draft use, 'high' (~$0.21) for final mesh
+  // seeds. 'medium' also available (~$0.053).
+  quality: GptImageQuality,
+): Promise<GptImage2Result> => {
+  debugLog('Generating image with gpt-image-2 via Responses API', {
+    userId,
+    conversationId,
+    prompt,
+    imagesCount: images.length,
+    priorImageCallId,
+  });
+
+  const content: Array<
+    | { type: 'input_text'; text: string }
+    | { type: 'input_image'; image_url: string; detail: 'auto' }
+  > = [{ type: 'input_text', text: prompt || 'Generate an image' }];
+
+  // Base64 path is only used when we have no prior gpt-image-2 call to
+  // reference (e.g. a freshly uploaded user image).
+  const shouldEncodeReference = !priorImageCallId && images.length > 0;
+
+  if (shouldEncodeReference) {
+    const latestImageId = images[images.length - 1];
+    const { data: imageData } = await supabaseClient.storage
+      .from('images')
+      .download(`${userId}/${conversationId}/${latestImageId}`);
+
+    if (!imageData) {
+      throw new Error(`Failed to download image ${latestImageId}`);
+    }
+
+    const imageArrayBuffer = await imageData.arrayBuffer();
+    const base64Image = Buffer.from(imageArrayBuffer).toString('base64');
+    const mimeType =
+      imageData.type && imageData.type.startsWith('image/')
+        ? imageData.type
+        : 'image/png';
+
+    content.push({
+      type: 'input_image',
+      image_url: `data:${mimeType};base64,${base64Image}`,
+      detail: 'auto',
+    });
+  }
+
+  const input: Array<
+    | { role: 'user'; content: typeof content }
+    | {
+        type: 'image_generation_call';
+        id: string;
+        result: string | null;
+        status: 'completed';
+      }
+  > = [];
+
+  // Prior assistant-side image_generation_call must precede the new user
+  // message so the model sees the image it produced before the edit request.
+  if (priorImageCallId) {
+    input.push({
+      type: 'image_generation_call',
+      id: priorImageCallId,
+      result: null,
+      status: 'completed',
+    });
+  }
+
+  input.push({ role: 'user', content });
+
+  // gpt-5.4 is the canonical orchestrator for the Responses API
+  // image_generation tool per OpenAI's docs; gpt-image-2 is the actual
+  // image model invoked via the tool.
+  const response = await openAI.responses.create({
+    model: 'gpt-5.4',
+    input,
+    tools: [
+      {
+        type: 'image_generation',
+        model: 'gpt-image-2',
+        quality,
+        size: '1024x1024',
+        output_format: 'jpeg',
+        background: 'opaque',
+        moderation: 'low',
+      },
+    ],
+  });
+
+  const imageCalls = response.output.flatMap((item) =>
+    item.type === 'image_generation_call' ? [item] : [],
+  );
+  const latestCall = imageCalls[imageCalls.length - 1];
+
+  if (!latestCall?.result) {
+    throw new Error('No generated image data from gpt-image-2');
+  }
+
+  debugLog('Successfully generated image with gpt-image-2', {
+    imageCallId: latestCall.id,
+    status: latestCall.status,
+  });
+
+  return {
+    imageBytes: Buffer.from(latestCall.result, 'base64'),
+    imageCallId: latestCall.id,
+    contentType: 'image/jpeg',
+  };
+};
+
 export const generateImageWithGeminiMultiTurn = async (
   supabaseClient: SupabaseClient,
   googleGenAI: GoogleGenAI,
@@ -135,10 +276,18 @@ export const generateImageWithGeminiMultiTurn = async (
     const imageArrayBuffer = await imageData.arrayBuffer();
     const buffer = Buffer.from(imageArrayBuffer);
     const base64Image = buffer.toString('base64');
+    // Derive mimeType from the blob rather than hardcoding png —
+    // gpt-image-2 stores jpeg, so a Gemini fallback on a later turn
+    // would otherwise send jpeg bytes declared as png and get rejected
+    // (or produce corrupt output).
+    const mimeType =
+      imageData.type && imageData.type.startsWith('image/')
+        ? imageData.type
+        : 'image/png';
 
     imagePart = {
       inlineData: {
-        mimeType: 'image/png',
+        mimeType,
         data: base64Image,
       },
     };
@@ -319,105 +468,3 @@ export const generateImageWithFlux = async (
   return imageBytes;
 };
 */
-
-/**
- * Generates an image using Gemini 3.1 Flash Image Preview directly via Google GenAI.
- * Best for initial text-to-image generation for 3D models.
- */
-export const generateImageWithGeminiFlash = async (
-  googleGenAI: GoogleGenAI,
-  prompt: string,
-): Promise<Buffer> => {
-  debugLog('Generating image with gemini-3.1-flash-image-preview');
-
-  const result = await googleGenAI.models.generateContent({
-    model: 'gemini-3.1-flash-image-preview',
-    contents: [{ text: prompt }],
-    config: {
-      responseModalities: [Modality.TEXT, Modality.IMAGE],
-    },
-  });
-
-  if (!result.candidates?.[0]?.content?.parts) {
-    throw new Error('No result from Gemini 3.1 Flash Image Preview');
-  }
-
-  let generatedImageData: string | undefined;
-  for (const part of result.candidates[0].content.parts) {
-    if (part.inlineData) {
-      generatedImageData = part.inlineData.data;
-    }
-  }
-
-  if (!generatedImageData) {
-    throw new Error('No image data from Gemini 3.1 Flash Image Preview');
-  }
-
-  const imageBytes = Buffer.from(generatedImageData, 'base64');
-  debugLog('Successfully generated image with gemini-3.1-flash-image-preview');
-
-  return imageBytes;
-};
-
-/**
- * Edits an image using Gemini 3.1 Flash Image Preview directly via Google GenAI.
- * Best for editing existing images or uploaded images for 3D model generation.
- */
-export const generateImageWithGeminiFlashEdit = async (
-  googleGenAI: GoogleGenAI,
-  prompt: string,
-  imageUrl: string,
-): Promise<Buffer> => {
-  debugLog('Editing image with gemini-3.1-flash-image-preview');
-  debugLog('Input image URL:', imageUrl);
-  debugLog('Prompt:', prompt);
-
-  try {
-    const imageResponse = await fetch(imageUrl);
-    if (!imageResponse.ok) {
-      throw new Error(`Failed to fetch input image: ${imageResponse.status}`);
-    }
-
-    const imageArrayBuffer = await imageResponse.arrayBuffer();
-    const base64Image = Buffer.from(imageArrayBuffer).toString('base64');
-
-    const result = await googleGenAI.models.generateContent({
-      model: 'gemini-3.1-flash-image-preview',
-      contents: [
-        { text: prompt },
-        {
-          inlineData: {
-            mimeType: 'image/png',
-            data: base64Image,
-          },
-        },
-      ],
-      config: {
-        responseModalities: [Modality.TEXT, Modality.IMAGE],
-      },
-    });
-
-    if (!result.candidates?.[0]?.content?.parts) {
-      throw new Error('No result from Gemini 3.1 Flash Image Preview edit');
-    }
-
-    let generatedImageData: string | undefined;
-    for (const part of result.candidates[0].content.parts) {
-      if (part.inlineData) {
-        generatedImageData = part.inlineData.data;
-      }
-    }
-
-    if (!generatedImageData) {
-      throw new Error('No image data from Gemini 3.1 Flash Image Preview edit');
-    }
-
-    const imageBytes = Buffer.from(generatedImageData, 'base64');
-    debugLog('Successfully edited image with gemini-3.1-flash-image-preview');
-
-    return imageBytes;
-  } catch (error) {
-    debugLog('Error in generateImageWithGeminiFlashEdit:', error);
-    throw error;
-  }
-};

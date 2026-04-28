@@ -154,6 +154,63 @@ export function isMeasurementParameter(param: Parameter): boolean {
 }
 
 /**
+ * Resolve any CSS color value (named or hex) to a #RRGGBB hex string, or
+ * return '' when the input isn't a color. Used both to detect color-typed
+ * string parameters and to normalize the value for the native/hex picker.
+ *
+ * Called once per ParameterInput render, so we memoize by input value and
+ * reuse a module-level canvas rather than allocating one each time.
+ *
+ * Detection trick: canvas fillStyle silently keeps the previous value on
+ * invalid input. We seed it with 'transparent' (normalizes to
+ * 'rgba(0, 0, 0, 0)' — never a 6-char hex, so no collision with any real
+ * color the user might declare) and check whether setting the user value
+ * changed the normalized form. Opaque colors round-trip to #rrggbb;
+ * rejected inputs leave the sentinel intact.
+ */
+const cssHexCache = new Map<string, string>();
+let cssHexCtx: CanvasRenderingContext2D | null = null;
+let cssHexSentinelNormalized: string | null = null;
+
+export function cssToHex(value: string): string {
+  if (typeof value !== 'string' || !value) return '';
+  const cached = cssHexCache.get(value);
+  if (cached !== undefined) return cached;
+
+  if (typeof document === 'undefined') return '';
+  if (!cssHexCtx) {
+    cssHexCtx = document.createElement('canvas').getContext('2d');
+    if (cssHexCtx) {
+      cssHexCtx.fillStyle = 'transparent';
+      cssHexSentinelNormalized = cssHexCtx.fillStyle;
+    }
+  }
+  if (!cssHexCtx || cssHexSentinelNormalized === null) return '';
+
+  cssHexCtx.fillStyle = cssHexSentinelNormalized;
+  cssHexCtx.fillStyle = value;
+  const normalized = cssHexCtx.fillStyle;
+  let result = '';
+  if (normalized !== cssHexSentinelNormalized) {
+    if (/^#[0-9a-f]{6}$/i.test(normalized)) {
+      result = normalized.toUpperCase();
+    }
+  }
+  cssHexCache.set(value, result);
+  return result;
+}
+
+/**
+ * True when the parameter is a string whose value parses as a CSS color.
+ * Used to route rendering to the ColorPicker UI and to group color params
+ * together at the bottom of the parameter panel.
+ */
+export function isColorParameter(param: Parameter): boolean {
+  if (param.type !== 'string') return false;
+  return cssToHex(String(param.value ?? param.defaultValue ?? '')) !== '';
+}
+
+/**
  * Validates and sanitizes a parameter value
  */
 export function validateParameterValue(

@@ -1,5 +1,5 @@
 import { useNavigate, Link, useOutletContext } from 'react-router-dom';
-import { LogIn } from 'lucide-react';
+import { ArrowUpRight, LogIn } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -17,13 +17,25 @@ import { SelectedItemsContext } from '@/contexts/SelectedItemsContext';
 import posthog from 'posthog-js';
 import * as Sentry from '@sentry/react';
 import { useSendContentMutation } from '@/services/messageService';
+import { useProfile } from '@/services/profileService';
 
 export function PromptView() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { user, totalTokens, isLoading } = useAuth();
+  const { user, billing, isLoading } = useAuth();
+  const totalTokens = billing?.tokens.total ?? 0;
+  const { data: profile, isLoading: isProfileLoading } = useProfile();
   const { isSidebarOpen } = useOutletContext<{ isSidebarOpen: boolean }>();
   const queryClient = useQueryClient();
+
+  const firstName = useMemo(() => {
+    // Wait until the profile query resolves for signed-in users so the
+    // greeting doesn't flash the email local-part before snapping to the
+    // real first name.
+    if (user && isProfileLoading) return '';
+    const source = profile?.full_name || user?.email?.split('@')[0] || '';
+    return source.trim().split(/\s+/)[0] || '';
+  }, [profile?.full_name, user, isProfileLoading]);
 
   const [type, setType] = useState<'parametric' | 'creative'>('parametric');
 
@@ -206,7 +218,8 @@ export function PromptView() {
                 isLoaded ? 'opacity-100' : 'opacity-0',
               )}
             >
-              {getTimeBasedGreeting}!
+              {getTimeBasedGreeting}
+              {firstName ? `, ${firstName}` : ''}!
             </h1>
           </div>
           <div className="flex w-full flex-col items-center">
@@ -253,6 +266,34 @@ export function PromptView() {
                   </div>
                 )}
               </div>
+              {!isLoading && user && !limitReached && !lowPrompts && (
+                <div className="flex justify-center">
+                  <a
+                    href="https://cad.onshape.com/appstore/apps/Design%20&%20Documentation/690a8dc864e816c112aa66a0"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      try {
+                        posthog.capture('onshape_banner_click', {
+                          location: 'prompt_view',
+                        });
+                      } catch {
+                        // Analytics failures (e.g. blocked by ad-blocker)
+                        // must never block the link's navigation.
+                      }
+                    }}
+                    className="group inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-sm text-adam-text-secondary transition-colors hover:border-adam-blue/40 hover:bg-adam-blue/10 hover:text-adam-text-primary"
+                  >
+                    <span>
+                      Try our{' '}
+                      <span className="font-medium text-adam-blue">
+                        Onshape extension
+                      </span>
+                    </span>
+                    <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                  </a>
+                </div>
+              )}
               {!user && (
                 <p className="text-center text-sm text-gray-500">
                   <Link

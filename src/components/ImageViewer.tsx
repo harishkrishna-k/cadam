@@ -27,10 +27,19 @@ export function ImageViewer({
   } = useImageData(image);
 
   const handleDownload = () => {
+    const url = imageUrl?.url || '';
+    // Parse MIME from the data URL (e.g. "data:image/jpeg;base64,...") so
+    // the downloaded file's extension matches the actual bytes. gpt-image-2
+    // generates jpeg, Gemini/Flux fallbacks generate png — hardcoding .png
+    // would mislabel jpeg downloads and some viewers reject the mismatch.
+    const mimeMatch = url.match(/^data:(image\/\w+);/);
+    const mime = mimeMatch?.[1] ?? 'image/png';
+    const ext =
+      mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
     const link = document.createElement('a');
-    link.href = imageUrl?.url || '';
+    link.href = url;
     const name = getSafeFilename(conversation.title);
-    link.download = `${name}.png`;
+    link.download = `${name}.${ext}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

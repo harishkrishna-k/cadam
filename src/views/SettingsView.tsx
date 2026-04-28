@@ -1,15 +1,11 @@
 import { Button } from '@/components/ui/button';
-import { useAuth } from '@/contexts/AuthContext';
-import { Loader2, Info } from 'lucide-react';
+import { getLevel, useAuth } from '@/contexts/AuthContext';
+import { Loader2, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useManageSubscription } from '@/services/subscriptionService';
-import { useTokenPackPurchase } from '@/services/subscriptionService';
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { Progress } from '@/components/ui/progress';
+  useManageSubscription,
+  useTokenPackPurchase,
+} from '@/services/subscriptionService';
 import { cn } from '@/lib/utils';
 import { DeleteAccountDialog } from '@/components/auth/DeleteAccountDialog';
 import { Switch } from '@/components/ui/switch';
@@ -21,18 +17,28 @@ import * as Sentry from '@sentry/react';
 import { useProfile, useUpdateProfile } from '@/services/profileService';
 import { AvatarUpdateDialog } from '@/components/auth/AvatarUpdateDialog';
 import { useTokenPacks } from '@/hooks/useTokenPacks';
-import { useTokenCosts } from '@/hooks/useTokenCosts';
+
+function formatPeriodEnd(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
 
 export default function SettingsView() {
-  const {
-    subscription,
-    subscriptionTokens,
-    purchasedTokens,
-    totalTokens,
-    subscriptionTokenLimit,
-    user,
-    resetPassword,
-  } = useAuth();
+  const { billing, user, resetPassword } = useAuth();
+  const level = getLevel(billing);
+  const freeTokens = billing?.tokens.free ?? 0;
+  const subscriptionTokens = billing?.tokens.subscription ?? 0;
+  const purchasedTokens = billing?.tokens.purchased ?? 0;
+  const totalTokens = billing?.tokens.total ?? 0;
+  const periodEnd = formatPeriodEnd(
+    billing?.subscription?.currentPeriodEnd ?? null,
+  );
   const { data: profile } = useProfile();
   const { mutate: updateProfile, isPending: isUpdateLoading } =
     useUpdateProfile();
@@ -41,18 +47,11 @@ export default function SettingsView() {
   const [editingName, setEditingName] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const { data: tokenPacks = [] } = useTokenPacks();
-  const { data: tokenCosts = [] } = useTokenCosts();
   const {
     mutate: purchaseTokenPack,
     isPending: isPurchaseLoading,
     variables: purchaseVariables,
   } = useTokenPackPurchase();
-
-  const subscriptionUsed = subscriptionTokenLimit - subscriptionTokens;
-  const usagePercent =
-    subscriptionTokenLimit > 0
-      ? (subscriptionUsed / subscriptionTokenLimit) * 100
-      : 0;
 
   useEffect(() => {
     if (editingName) {
@@ -137,27 +136,48 @@ export default function SettingsView() {
       },
     });
 
-  return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-adam-background-1 p-8">
-      <div className="mx-auto flex max-w-4xl flex-col gap-12">
-        <h1 className="text-2xl font-medium text-adam-neutral-50">Settings</h1>
+  const tierLabel =
+    level === 'free'
+      ? 'Adam Free'
+      : level === 'standard'
+        ? 'Adam Standard'
+        : 'Adam Pro';
 
-        <div className="flex flex-col gap-24">
-          <div className="grid grid-cols-3 items-center gap-4 sm:grid-cols-4">
-            <div className="h-full w-full">
-              <h2 className="text-lg font-medium text-adam-neutral-50">
-                Account
-              </h2>
-            </div>
-            <div className="col-span-3 flex w-full flex-col gap-8 text-adam-neutral-50">
-              <div className="col-span-3 grid grid-cols-3 items-center gap-4">
-                <div className="col-span-2 flex items-center gap-4 text-adam-neutral-50">
+  const tierAccent =
+    level === 'free'
+      ? 'bg-adam-neutral-700 text-adam-neutral-50'
+      : level === 'standard'
+        ? 'bg-adam-blue/15 text-adam-blue'
+        : 'bg-gradient-to-r from-adam-blue/20 to-fuchsia-500/20 text-adam-neutral-50';
+
+  return (
+    <div className="flex min-h-full w-full items-center justify-center bg-adam-background-1 px-6 py-10">
+      <div className="w-full max-w-xl">
+        <header className="mb-8">
+          <h1 className="text-2xl font-medium tracking-tight text-adam-neutral-50">
+            Settings
+          </h1>
+          <p className="mt-1 text-sm text-adam-neutral-200">
+            Manage your account, billing, and preferences.
+          </p>
+        </header>
+
+        <div className="flex flex-col gap-4">
+          {/* Account */}
+          <section className="rounded-xl border border-adam-neutral-800 bg-adam-background-2 p-6">
+            <h2 className="mb-5 text-sm font-medium text-adam-neutral-50">
+              Account
+            </h2>
+
+            <div className="divide-y divide-adam-neutral-800">
+              <div className="flex items-center justify-between gap-4 pb-5">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
                   <AvatarUpdateDialog />
                   {editingName ? (
                     <Input
                       ref={nameInputRef}
                       value={newName}
-                      className="h-9 w-full"
+                      className="h-9 w-full max-w-xs"
                       onChange={(e) => setNewName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -167,24 +187,21 @@ export default function SettingsView() {
                       }}
                     />
                   ) : (
-                    <div className="text-sm font-medium">
+                    <div className="min-w-0 truncate text-sm text-adam-neutral-50">
                       {profile?.full_name || user?.email}
                     </div>
                   )}
                 </div>
                 {editingName ? (
-                  <div className="flex items-center justify-end gap-2">
+                  <div className="flex flex-shrink-0 items-center gap-2">
                     <Button
                       onClick={() => handleUpdateName()}
                       variant="light"
                       disabled={isUpdateLoading}
-                      className="justify-self-end rounded-full font-light"
+                      className="rounded-full font-light"
                     >
                       {isUpdateLoading ? (
-                        <div className="flex items-center gap-2">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Saving...
-                        </div>
+                        <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         'Save'
                       )}
@@ -195,7 +212,7 @@ export default function SettingsView() {
                         setNewName(profile?.full_name || '');
                       }}
                       variant="dark"
-                      className="justify-self-end rounded-full font-light"
+                      className="rounded-full font-light"
                     >
                       Cancel
                     </Button>
@@ -204,260 +221,241 @@ export default function SettingsView() {
                   <Button
                     onClick={() => setEditingName(true)}
                     variant="dark"
-                    className="justify-self-end rounded-full font-light"
+                    className="flex-shrink-0 rounded-full font-light"
                   >
                     Edit
                   </Button>
                 )}
               </div>
-              <div className="col-span-2 flex flex-col gap-2">
-                <div className="text-sm font-medium">Email</div>
-                <div className="text-xs text-adam-neutral-200">
+
+              <div className="py-5">
+                <div className="text-sm text-adam-neutral-50">Email</div>
+                <div className="mt-0.5 truncate text-xs text-adam-neutral-200">
                   {user?.email}
                 </div>
               </div>
-              <div className="col-span-3 grid grid-cols-3 items-center gap-2">
-                <div className="col-span-2 flex flex-col gap-2">
-                  <div className="text-sm font-medium">Password</div>
-                  <div className="text-xs text-adam-neutral-200">
-                    Reset your password
+
+              <div className="flex items-center justify-between gap-4 pt-5">
+                <div className="min-w-0">
+                  <div className="text-sm text-adam-neutral-50">Password</div>
+                  <div className="mt-0.5 text-xs text-adam-neutral-200">
+                    Send a reset link to your email
                   </div>
                 </div>
                 <Button
                   onClick={() => handleResetPassword()}
                   disabled={isResetLoading}
                   variant="dark"
-                  className="justify-self-end rounded-full font-light"
+                  className="flex-shrink-0 rounded-full font-light"
                 >
                   {isResetLoading ? (
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Loading...
-                    </div>
+                    <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     'Reset Password'
                   )}
                 </Button>
               </div>
             </div>
-          </div>
+          </section>
 
-          <div className="grid grid-cols-3 items-center gap-4 sm:grid-cols-4">
-            <div className="h-full w-full">
-              <h2 className="text-lg font-medium text-adam-neutral-50">
-                Notifications
-              </h2>
-            </div>
-            <div className="col-span-3 grid grid-cols-3 items-center gap-4">
-              <div className="col-span-2 flex w-full flex-col gap-2 text-adam-neutral-50">
-                <div className="text-sm font-medium">Responses</div>
-                <div className="text-xs text-adam-neutral-200">
-                  Get notified when Adam finishes a long-running request, like a
-                  highest quality mesh generation.
+          {/* Notifications */}
+          <section className="rounded-xl border border-adam-neutral-800 bg-adam-background-2 p-6">
+            <h2 className="mb-5 text-sm font-medium text-adam-neutral-50">
+              Notifications
+            </h2>
+
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-adam-neutral-50">Responses</div>
+                <div className="mt-0.5 text-xs leading-relaxed text-adam-neutral-200">
+                  Get notified when Adam finishes a long-running request.
                 </div>
               </div>
               <Switch
-                className="justify-self-end"
-                checked={profile?.notifications_enabled}
+                className="mt-0.5"
+                checked={profile?.notifications_enabled ?? false}
                 onCheckedChange={handleUpdateNotifications}
               />
             </div>
-          </div>
+          </section>
 
-          <div className="grid grid-cols-3 items-center gap-4 sm:grid-cols-4">
-            <div className="h-full w-full">
-              <h2 className="text-lg font-medium text-adam-neutral-50">
-                Billing
-              </h2>
-            </div>
-            <div className="col-span-3 flex w-full flex-col gap-6">
-              {/* Subscription info */}
-              <div className="grid grid-cols-3 items-center gap-4">
-                <div className="col-span-2 flex w-full flex-col gap-2">
-                  <div className="flex items-center gap-2 text-adam-neutral-50">
-                    <p className="text-sm font-medium">
-                      {subscription === 'free'
-                        ? 'Adam Free'
-                        : subscription === 'standard'
-                          ? 'Adam Standard'
-                          : 'Adam Pro'}
-                    </p>
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <Info className="h-4 w-4" />
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{subscriptionTokenLimit} tokens per period</p>
-                        {tokenCosts.map((tc) => (
-                          <p key={tc.operation}>
-                            {tc.operation}: {tc.cost} tokens
-                          </p>
-                        ))}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
+          {/* Billing */}
+          <section className="rounded-xl border border-adam-neutral-800 bg-adam-background-2 p-6">
+            <h2 className="mb-5 text-sm font-medium text-adam-neutral-50">
+              Billing
+            </h2>
 
-                  {/* Token usage bar */}
-                  <div className="flex w-full flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-adam-neutral-200">
-                        Subscription tokens
-                      </span>
-                      <span className="text-xs text-adam-neutral-200">
-                        {subscriptionTokens} / {subscriptionTokenLimit}
-                      </span>
-                    </div>
-                    <Progress
-                      indicatorClassName={cn(
-                        usagePercent < 70
-                          ? 'bg-lime-500'
-                          : usagePercent < 90
-                            ? 'bg-amber-500'
-                            : 'bg-[#FB2C2C]',
-                      )}
-                      className={cn(
-                        usagePercent < 70
-                          ? 'bg-lime-800'
-                          : usagePercent < 90
-                            ? 'bg-amber-800'
-                            : 'bg-[#843535]',
-                      )}
-                      max={subscriptionTokenLimit}
-                      value={subscriptionUsed}
-                    />
-
-                    {purchasedTokens > 0 && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-adam-neutral-200">
-                          Purchased tokens
-                        </span>
-                        <span className="text-xs text-adam-neutral-200">
-                          {purchasedTokens}
-                        </span>
-                      </div>
+            <div className="flex flex-col gap-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium',
+                      tierAccent,
                     )}
-
-                    <div className="flex items-center justify-between border-t border-adam-neutral-700 pt-1">
-                      <span className="text-xs font-medium text-adam-neutral-50">
-                        Total available
-                      </span>
-                      <span className="text-xs font-medium text-adam-neutral-50">
-                        {totalTokens}
-                      </span>
-                    </div>
-                  </div>
+                  >
+                    {level === 'pro' && <Sparkles className="h-3 w-3" />}
+                    {tierLabel}
+                  </span>
+                  {periodEnd && (
+                    <span className="text-xs text-adam-neutral-300">
+                      Renews {periodEnd}
+                    </span>
+                  )}
                 </div>
 
-                {subscription !== 'free' ? (
+                {level !== 'free' ? (
                   <Button
                     onClick={() => handleManageSubscription()}
-                    className="justify-self-end rounded-full font-light"
+                    className="flex-shrink-0 rounded-full font-light"
                     variant="dark"
                     disabled={isManageLoading}
                   >
                     {isManageLoading ? (
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Loading...
-                      </div>
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       'Manage'
                     )}
                   </Button>
                 ) : (
-                  <Link to="/subscription" className="justify-self-end">
-                    <Button
-                      className="justify-self-end rounded-full font-light"
-                      variant="dark"
-                    >
+                  <Link to="/subscription" className="flex-shrink-0">
+                    <Button className="rounded-full font-light" variant="light">
                       Upgrade
                     </Button>
                   </Link>
                 )}
               </div>
 
-              {/* Buy Tokens section */}
+              <div className="flex flex-col gap-2">
+                {level !== 'free' && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-adam-neutral-200">
+                      Subscription tokens
+                    </span>
+                    <span className="text-xs tabular-nums text-adam-neutral-50">
+                      {subscriptionTokens.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {freeTokens > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-adam-neutral-200">
+                      Daily free tokens
+                    </span>
+                    <span className="text-xs tabular-nums text-adam-neutral-50">
+                      {freeTokens.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {purchasedTokens > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-adam-neutral-200">
+                      Purchased tokens
+                    </span>
+                    <span className="text-xs tabular-nums text-adam-neutral-50">
+                      {purchasedTokens.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-between border-t border-adam-neutral-800 pt-3">
+                  <span className="text-sm text-adam-neutral-50">
+                    Total available
+                  </span>
+                  <span className="text-sm font-medium tabular-nums text-adam-neutral-50">
+                    {totalTokens.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
               {tokenPacks.length > 0 && (
-                <div className="flex flex-col gap-3">
-                  <div className="text-sm font-medium text-adam-neutral-50">
-                    Buy Tokens
+                <div className="flex flex-col gap-2 border-t border-adam-neutral-800 pt-5">
+                  <div className="flex items-baseline justify-between">
+                    <div className="text-sm text-adam-neutral-50">
+                      Buy more tokens
+                    </div>
+                    <div className="text-xs text-adam-neutral-200">
+                      Never expire
+                    </div>
                   </div>
-                  <div className="text-xs text-adam-neutral-200">
-                    Purchased tokens never expire.
-                  </div>
-                  <div className="flex flex-wrap gap-3">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {tokenPacks.map((pack) => {
                       const isThisPending =
                         isPurchaseLoading &&
-                        purchaseVariables?.lookupKey === pack.stripe_lookup_key;
+                        purchaseVariables?.priceId === pack.stripePriceId;
                       return (
-                        <Button
+                        <button
                           key={pack.id}
-                          variant="dark"
-                          className="rounded-full font-light"
+                          type="button"
                           disabled={isPurchaseLoading}
                           onClick={() =>
-                            purchaseTokenPack({
-                              lookupKey: pack.stripe_lookup_key,
-                            })
+                            purchaseTokenPack({ priceId: pack.stripePriceId })
                           }
+                          className={cn(
+                            'relative flex flex-col items-start rounded-lg border border-adam-neutral-800 bg-adam-background-1 px-3 py-2.5 text-left transition-colors',
+                            'hover:border-adam-blue/40 hover:bg-adam-neutral-800/40',
+                            'disabled:cursor-not-allowed disabled:opacity-50',
+                          )}
                         >
                           {isThisPending && (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            <Loader2 className="absolute right-2 top-2 h-3.5 w-3.5 animate-spin text-adam-neutral-200" />
                           )}
-                          {`${pack.token_amount} tokens - $${(pack.price_cents / 100).toFixed(2)}`}
-                        </Button>
+                          <div className="text-sm font-medium tabular-nums text-adam-neutral-50">
+                            {pack.tokenAmount.toLocaleString()}
+                          </div>
+                          <div className="mt-0.5 text-xs tabular-nums text-adam-neutral-200">
+                            ${(pack.priceCents / 100).toFixed(2)}
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
                 </div>
               )}
             </div>
-          </div>
+          </section>
 
-          <div className="flex flex-col gap-8">
-            <div className="grid grid-cols-3 items-center gap-4 sm:grid-cols-4">
-              <div className="h-full w-full">
-                <h2 className="text-lg font-medium text-adam-neutral-50">
-                  Data and Privacy
-                </h2>
-              </div>
-              <div className="col-span-3 grid grid-cols-3 items-center gap-4">
-                <div className="col-span-2 flex w-full flex-col gap-2 text-adam-neutral-50">
-                  <div className="text-sm font-medium">Delete Account</div>
-                  <div className="text-xs text-adam-neutral-200">
-                    Permanently delete your account and all associated data from
-                    Adam
-                  </div>
+          {/* Data & Privacy */}
+          <section className="rounded-xl border border-adam-neutral-800 bg-adam-background-2 p-6">
+            <h2 className="mb-5 text-sm font-medium text-adam-neutral-50">
+              Data and privacy
+            </h2>
+
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-adam-neutral-50">
+                  Delete account
                 </div>
-                <DeleteAccountDialog>
-                  <Button
-                    className="justify-self-end rounded-full font-light"
-                    variant="destructive"
-                  >
-                    Delete
-                  </Button>
-                </DeleteAccountDialog>
+                <div className="mt-0.5 text-xs leading-relaxed text-adam-neutral-200">
+                  Permanently delete your account and all associated data.
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-4 items-center gap-4">
-              <div className="col-span-4 flex w-full items-center justify-center gap-2 sm:col-span-2 sm:col-start-2 sm:justify-normal">
+              <DeleteAccountDialog>
                 <Button
-                  className="rounded-full font-light"
-                  variant="dark"
-                  asChild
+                  className="flex-shrink-0 rounded-full font-light"
+                  variant="destructive"
                 >
-                  <Link to="/terms-of-service">Terms of Service</Link>
+                  Delete
                 </Button>
-                <Button
-                  className="rounded-full font-light"
-                  variant="dark"
-                  asChild
-                >
-                  <Link to="/privacy-policy">Privacy Policy</Link>
-                </Button>
-              </div>
+              </DeleteAccountDialog>
             </div>
+          </section>
+
+          <div className="mt-2 flex items-center justify-center gap-3 text-xs text-adam-neutral-300">
+            <Link
+              to="/terms-of-service"
+              className="transition-colors hover:text-adam-neutral-50"
+            >
+              Terms of Service
+            </Link>
+            <span aria-hidden className="text-adam-neutral-700">
+              •
+            </span>
+            <Link
+              to="/privacy-policy"
+              className="transition-colors hover:text-adam-neutral-50"
+            >
+              Privacy Policy
+            </Link>
           </div>
         </div>
       </div>

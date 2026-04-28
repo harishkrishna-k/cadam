@@ -52,6 +52,7 @@ export type OpenSCADWorkerResponseData = {
   output: Uint8Array;
   exitCode: number;
   duration: number;
+  extraOutputs?: Record<string, Uint8Array>;
 };
 
 export type FileSystemWorkerMessageData = {

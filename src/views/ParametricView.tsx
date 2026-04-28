@@ -2,7 +2,8 @@ import { ChatSection } from '@/components/chat/ChatSection';
 import { ParameterSection } from '@/components/parameter/ParameterSection';
 import { Content, Message, Model, Parameter } from '@shared/types';
 import OpenSCADError from '@/lib/OpenSCADError';
-import { useRef, useState, useMemo, useCallback } from 'react';
+import { cn } from '@/lib/utils';
+import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import {
   ImperativePanelHandle,
   Panel,
@@ -45,7 +46,6 @@ interface ParametricViewProps {
   setCurrentOutput: (output: Blob | undefined) => void;
   color: string;
   limitReached?: boolean;
-  setColor: (color: string) => void;
   changeParameters: (message: Message | null, parameters: Parameter[]) => void;
   stopGenerating?: () => void;
   fixError?: (error: OpenSCADError) => void;
@@ -62,7 +62,6 @@ export default function ParametricView({
   currentOutput,
   setCurrentOutput,
   color,
-  setColor,
   limitReached = false,
   changeParameters,
   stopGenerating,
@@ -151,6 +150,23 @@ export default function ParametricView({
     () => !!currentMessage?.content.artifact,
     [currentMessage],
   );
+
+  // `react-resizable-panels` only honors `defaultSize` at initial mount, and
+  // the PanelGroup's `autoSaveId` can restore a persisted size of 0 from a
+  // prior no-artifact session. Drive visibility imperatively via
+  // collapse/expand so the panel actually opens when the artifact arrives
+  // and shrinks to 0 when it's gone. useLayoutEffect avoids a visible flash
+  // on first paint when the persisted layout disagrees with `hasArtifact`.
+  useLayoutEffect(() => {
+    const panel = parameterPanelRef.current;
+    if (!panel) return;
+    if (hasArtifact) {
+      panel.expand();
+      setIsParametersPanelCollapsed(false);
+    } else {
+      panel.collapse();
+    }
+  }, [hasArtifact]);
 
   // Optimized collapse/expand handlers
   const handleChatCollapse = useCallback(() => {
@@ -285,60 +301,72 @@ export default function ParametricView({
               fixError={!limitReached ? fixError : undefined}
             />
           </Panel>
-          {hasArtifact && (
-            <>
-              <PanelResizeHandle className="resize-handle group relative">
-                {!isParametersPanelCollapsed && (
-                  <div className="absolute right-1 top-1/2 z-50 -translate-y-1/2 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                    <Button
-                      variant="ghost"
-                      className="rounded-l-lg rounded-r-none border-b border-l border-t border-gray-200/20 bg-adam-bg-secondary-dark p-2 text-adam-text-primary transition-colors dark:border-gray-800 [@media(hover:hover)]:hover:bg-adam-neutral-950 [@media(hover:hover)]:hover:text-adam-neutral-10"
-                      onClick={handleParametersCollapse}
-                    >
-                      <ChevronsRight className="h-5 w-5" />
-                    </Button>
+          {/*
+            Always mount the resize handle + parameters Panel so the
+            PanelGroup's registered panel count never changes. Toggling
+            `hasArtifact` caused react-resizable-panels to throw
+            "Panel data not found for index 2", which unmounted the
+            view mid-stream and orphaned the SSE mutation.
+            When no artifact exists we collapse the panel to zero size
+            and hide the handle so the layout reads as two panels.
+          */}
+          <PanelResizeHandle
+            disabled={!hasArtifact}
+            className={cn(
+              'resize-handle group relative',
+              !hasArtifact && 'pointer-events-none !w-0 before:hidden',
+            )}
+          >
+            {hasArtifact && !isParametersPanelCollapsed && (
+              <div className="absolute right-1 top-1/2 z-50 -translate-y-1/2 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                <Button
+                  variant="ghost"
+                  className="rounded-l-lg rounded-r-none border-b border-l border-t border-gray-200/20 bg-adam-bg-secondary-dark p-2 text-adam-text-primary transition-colors dark:border-gray-800 [@media(hover:hover)]:hover:bg-adam-neutral-950 [@media(hover:hover)]:hover:text-adam-neutral-10"
+                  onClick={handleParametersCollapse}
+                >
+                  <ChevronsRight className="h-5 w-5" />
+                </Button>
+              </div>
+            )}
+            {hasArtifact && isParametersPanelCollapsed && (
+              <div className="absolute right-0 top-1/2 z-50 -translate-y-1/2">
+                <Button
+                  aria-label="Expand parameters panel"
+                  onClick={handleParametersExpand}
+                  className="flex h-[140px] w-9 flex-col items-center rounded-l-lg rounded-r-none bg-adam-bg-secondary-dark p-2 px-1.5 py-2 text-adam-text-primary"
+                >
+                  <ChevronsRight className="mb-3 h-5 w-5 rotate-180 text-white" />
+                  <div className="flex flex-1 items-center justify-center">
+                    <span className="min-w-[100px] -rotate-90 transform text-center text-base font-semibold text-white">
+                      Parameters
+                    </span>
                   </div>
-                )}
-                {isParametersPanelCollapsed && (
-                  <div className="absolute right-0 top-1/2 z-50 -translate-y-1/2">
-                    <Button
-                      aria-label="Expand parameters panel"
-                      onClick={handleParametersExpand}
-                      className="flex h-[140px] w-9 flex-col items-center rounded-l-lg rounded-r-none bg-adam-bg-secondary-dark p-2 px-1.5 py-2 text-adam-text-primary"
-                    >
-                      <ChevronsRight className="mb-3 h-5 w-5 rotate-180 text-white" />
-                      <div className="flex flex-1 items-center justify-center">
-                        <span className="min-w-[100px] -rotate-90 transform text-center text-base font-semibold text-white">
-                          Parameters
-                        </span>
-                      </div>
-                    </Button>
-                  </div>
-                )}
-              </PanelResizeHandle>
-              <Panel
-                collapsible
-                ref={parameterPanelRef}
-                defaultSize={parametersPanelSizes.defaultSize}
-                minSize={parametersPanelSizes.minSize}
-                maxSize={parametersPanelSizes.maxSize}
-                id="parameters-panel"
-                order={2}
-              >
-                <div className="relative h-full">
-                  <ParameterSection
-                    parameters={
-                      currentMessage?.content.artifact?.parameters ?? []
-                    }
-                    onSubmit={changeParameters}
-                    currentOutput={currentOutput}
-                    color={color}
-                    setColor={setColor}
-                  />
-                </div>
-              </Panel>
-            </>
-          )}
+                </Button>
+              </div>
+            )}
+          </PanelResizeHandle>
+          <Panel
+            collapsible
+            collapsedSize={0}
+            ref={parameterPanelRef}
+            defaultSize={parametersPanelSizes.defaultSize}
+            minSize={parametersPanelSizes.minSize}
+            maxSize={parametersPanelSizes.maxSize}
+            id="parameters-panel"
+            order={2}
+          >
+            {hasArtifact && (
+              <div className="relative h-full">
+                <ParameterSection
+                  parameters={
+                    currentMessage?.content.artifact?.parameters ?? []
+                  }
+                  onSubmit={changeParameters}
+                  currentOutput={currentOutput}
+                />
+              </div>
+            )}
+          </Panel>
         </PanelGroup>
       )}
     </div>

@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { PanelLeft } from 'lucide-react';
 
 import { Sidebar } from './Sidebar';
+import { CreditsButton } from './CreditsButton';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -48,6 +49,21 @@ export function Layout() {
           setIsSidebarOpen={setIsSidebarOpen}
         />
         <div className="relative flex-1 overflow-auto bg-adam-bg-dark">
+          {/* Credits button — home page only. Mirrors the sidebar-toggle's
+              movement: eases inward when the sidebar opens (so it lands
+              inside the rounded panel) and back to the edge when it closes.
+              The `!user` branch above returns early, so no `user` guard here. */}
+          {location.pathname === '/' && (
+            <div
+              className={`absolute z-20 transition-all duration-300 ease-in-out ${
+                isSidebarOpen && !isMobile
+                  ? 'right-[2.25rem] top-[2.25rem]'
+                  : 'right-3.5 top-3.5'
+              }`}
+            >
+              <CreditsButton />
+            </div>
+          )}
           {/* Toggle Sidebar Button - Positioned on main content area */}
           {!isMobile && user && (
             <Button

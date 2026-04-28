@@ -1,5 +1,5 @@
-import { RefreshCcw, Download, ChevronUp } from 'lucide-react';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { RefreshCcw, Download, ChevronUp, ChevronDown } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message, Parameter } from '@shared/types';
@@ -15,9 +15,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { ParameterInput } from '@/components/parameter/ParameterInput';
-import { ColorPicker } from '@/components/parameter/ColorPicker';
-import { validateParameterValue } from '@/utils/parameterUtils';
+import {
+  validateParameterValue,
+  isColorParameter,
+} from '@/utils/parameterUtils';
 import { useCurrentMessage } from '@/contexts/CurrentMessageContext';
 import { downloadSTLFile, downloadOpenSCADFile } from '@/utils/downloadUtils';
 
@@ -25,19 +32,30 @@ interface ParameterSectionProps {
   parameters: Parameter[];
   onSubmit: (message: Message | null, parameters: Parameter[]) => void;
   currentOutput?: Blob;
-  color: string;
-  setColor: (color: string) => void;
 }
 
 export function ParameterSection({
   parameters,
   onSubmit,
   currentOutput,
-  color,
-  setColor,
 }: ParameterSectionProps) {
   const { currentMessage } = useCurrentMessage();
   const [selectedFormat, setSelectedFormat] = useState<'stl' | 'scad'>('stl');
+
+  // Split params into the main list (non-color, shown by default) and a
+  // collapsible Colors group below it. Keeps the dimensions the user
+  // usually wants front-and-center while colors stay one click away.
+  const { mainParameters, colorParameters } = useMemo(() => {
+    const main: Parameter[] = [];
+    const color: Parameter[] = [];
+    for (const p of parameters) {
+      if (isColorParameter(p)) color.push(p);
+      else main.push(p);
+    }
+    return { mainParameters: main, colorParameters: color };
+  }, [parameters]);
+  const [colorsOpen, setColorsOpen] = useState(true);
+  const [dimensionsOpen, setDimensionsOpen] = useState(true);
 
   // Debounce timer for compilation
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -143,19 +161,78 @@ export function ParameterSection({
       <div className="flex h-[calc(100%-3.5rem)] flex-col justify-between overflow-hidden">
         <ScrollArea className="flex-1 px-6 py-6">
           <div className="flex flex-col gap-3">
-            {parameters.map((param) => (
-              <ParameterInput
-                key={param.name}
-                param={param}
-                handleCommit={handleCommit}
-              />
-            ))}
+            {mainParameters.length > 0 && (
+              <Collapsible
+                open={dimensionsOpen}
+                onOpenChange={setDimensionsOpen}
+              >
+                <CollapsibleTrigger
+                  aria-label={`${dimensionsOpen ? 'Collapse' : 'Expand'} dimension parameters`}
+                  className="group flex w-full items-center justify-between gap-2 rounded-md py-1 text-xs font-semibold text-adam-text-primary transition-colors focus:outline-none"
+                >
+                  <span className="flex items-center gap-2">
+                    Dimensions
+                    <span className="text-[10px] text-adam-neutral-400">
+                      {mainParameters.length}
+                    </span>
+                  </span>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-adam-neutral-400 transition-all duration-200 group-hover:text-adam-text-primary ${
+                      dimensionsOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0">
+                  <div className="mt-3 flex flex-col gap-3">
+                    {mainParameters.map((param) => (
+                      <ParameterInput
+                        key={param.name}
+                        param={param}
+                        handleCommit={handleCommit}
+                      />
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+            {colorParameters.length > 0 && (
+              <Collapsible
+                open={colorsOpen}
+                onOpenChange={setColorsOpen}
+                className="mt-3 border-t border-adam-neutral-700/60 pt-3"
+              >
+                <CollapsibleTrigger
+                  aria-label={`${colorsOpen ? 'Collapse' : 'Expand'} color parameters`}
+                  className="group flex w-full items-center justify-between gap-2 rounded-md py-1 text-xs font-semibold text-adam-text-primary transition-colors focus:outline-none"
+                >
+                  <span className="flex items-center gap-2">
+                    Colors
+                    <span className="text-[10px] text-adam-neutral-400">
+                      {colorParameters.length}
+                    </span>
+                  </span>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-adam-neutral-400 transition-all duration-200 group-hover:text-adam-text-primary ${
+                      colorsOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0">
+                  <div className="mt-3 flex flex-col gap-3">
+                    {colorParameters.map((param) => (
+                      <ParameterInput
+                        key={param.name}
+                        param={param}
+                        handleCommit={handleCommit}
+                      />
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
           </div>
         </ScrollArea>
         <div className="flex flex-col gap-4 border-t border-adam-neutral-700 px-6 py-6">
-          <div>
-            <ColorPicker color={color} onChange={setColor} />
-          </div>
           <div className="flex">
             <Button
               onClick={handleDownload}

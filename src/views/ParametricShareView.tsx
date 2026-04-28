@@ -11,7 +11,9 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 
 export default function ParametricShareView() {
   const { conversation } = useConversation();
-  const [color, setColor] = useState('#00A6FF');
+  // Brand fallback used only when OFF parsing fails and we render the
+  // single-color STL mesh.
+  const color = '#00A6FF';
   const [currentOutput, setCurrentOutput] = useState<Blob | undefined>();
   const { setCurrentMessage } = useCurrentMessage();
   const queryClient = useQueryClient();
@@ -104,7 +106,6 @@ export default function ParametricShareView() {
       isLoading={false}
       currentOutput={currentOutput}
       setCurrentOutput={setCurrentOutput}
-      setColor={setColor}
     />
   );
 }

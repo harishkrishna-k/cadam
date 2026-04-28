@@ -67,8 +67,11 @@
   * {
     @apply border-border;
   }
+  html {
+    @apply bg-adam-bg-dark;
+  }
   body {
-    @apply m-0 min-h-dvh w-full bg-background text-foreground;
+    @apply m-0 min-h-dvh w-full bg-adam-bg-dark text-foreground;
     font-family: 'Inter', sans-serif;
   }
 }

@@ -5,9 +5,11 @@ import { Switch } from '@/components/ui/switch';
 import {
   validateParameterValue,
   isMeasurementParameter,
+  cssToHex,
 } from '@/utils/parameterUtils';
 import { ParameterSlider } from '@/components/parameter/ParameterSlider';
 import { Label } from '@/components/ui/label';
+import { ColorPicker } from '@/components/parameter/ColorPicker';
 
 export function ParameterInput({
   param,
@@ -95,6 +97,32 @@ export function ParameterInput({
     );
   }
   if (param.type === 'string') {
+    const currentValue = String(paramState.value);
+    const hex = cssToHex(currentValue);
+    const isColor = hex !== '';
+    if (isColor) {
+      // Strip the redundant "Color" suffix — the whole color section groups
+      // these together and the swatch/hex already signal it's a color. Keeps
+      // the 80px label column from wrapping multi-word names to two lines.
+      const labelText =
+        paramState.displayName.replace(/\s*color$/i, '').trim() ||
+        paramState.displayName;
+      return (
+        <div className="grid w-full grid-cols-[80px_1fr] items-center gap-3">
+          <Label
+            className="overflow-hidden text-ellipsis text-xs font-normal text-adam-neutral-300"
+            htmlFor={paramState.name}
+            title={paramState.displayName}
+          >
+            {labelText}
+          </Label>
+          <ColorPicker
+            color={hex}
+            onChange={(next) => handleValueCommit(next.toUpperCase())}
+          />
+        </div>
+      );
+    }
     return (
       <div className="grid w-full grid-cols-[80px_1fr] items-center gap-3">
         <Label
@@ -108,7 +136,7 @@ export function ParameterInput({
           name={paramState.name}
           autoComplete="off"
           className="h-6 w-full min-w-0 rounded-md bg-adam-neutral-800 px-2 text-left text-xs text-adam-text-primary transition-colors selection:bg-adam-blue/50 selection:text-white focus:outline-none [@media(hover:hover)]:hover:bg-adam-neutral-700"
-          value={String(paramState.value)}
+          value={currentValue}
           onChange={(e) => handleValueChange(e.target.value)}
           onFocus={(e) => e.target.select()}
           onBlur={() => handleValueCommit(paramState.value)}
